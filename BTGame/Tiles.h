@@ -9,16 +9,20 @@
 #define COL_SOLID_RIGHT (1 << 3)
 #define COL_SOLID (COL_SOLID_TOP|COL_SOLID_LEFT|COL_SOLID_BOTTOM|COL_SOLID_RIGHT)
 
+typedef struct Sprite_t Sprite;
+
 #pragma pack(push, 1)
 
-typedef struct {
-   byte schema;
-   byte collision;//use "solid" flags
-}Tile;
+typedef struct Tile_t Tile;
+
+byte tileGetCollision(Tile *self);
+byte tileGetSchema(Tile *self);
+
+void tileSetCollision(Tile *self, byte col);
+void tileSetSchema(Tile *self, byte schema);
 
 typedef struct {
-   short img[3];
-   byte imgCount;
+   Sprite *sprite;
    byte occlusion;
 
    //lighting
@@ -27,5 +31,7 @@ typedef struct {
    byte centerLevel;
    byte fadeWidth;
 }TileSchema;
+
+
 
 #pragma pack(pop)

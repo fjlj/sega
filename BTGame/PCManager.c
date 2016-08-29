@@ -1,113 +1,134 @@
 #include "Managers.h"
-#include "Entities/Entities.h"
-#include "CoreComponents.h"
 #include "WorldView.h"
 #include "LightGrid.h"
 #include "segashared/CheckedMemory.h"
 #include "ImageLibrary.h"
 #include "Lua.h"
+#include "Actors.h"
+#include "GameClock.h"
 
 
 struct PCManager_t {
-   Manager m;
    WorldView *view;
+   Actor *pc;
 
-   Entity *pc;
    bool usingTorch;
    bool sneaking;
 };
 
-ImplManagerVTable(PCManager)
 
-PCManager *createPCManager(WorldView *view) {
+
+PCManager *pcManagerCreate(WorldView *view) {
    PCManager *out = checkedCalloc(1, sizeof(PCManager));
    out->view = view;
-   out->m.vTable = CreateManagerVTable(PCManager);
    return out;
 }
 
-void _destroy(PCManager *self) {
+void pcManagerDestroy(PCManager *self) {
+   actorDestroy(self->pc);
    checkedFree(self);
 }
-void _onDestroy(PCManager *self, Entity *e) {}
-void _onUpdate(PCManager *self, Entity *e) {}
 
 static void _updateSprite(PCManager *self) {
-   ImageComponent *ic = entityGet(ImageComponent)(self->pc);
 
    if (self->sneaking) {
-      ic->x = 28;
-      ic->y = 28;
+      actorSetImagePos(self->pc, (Int2) {28, 28});
    }
    else if (self->usingTorch) {
-      ic->x = 56;
-      ic->y = 28;
+      actorSetImagePos(self->pc, (Int2) { 56, 28 });
    }
    else {
-      ic->x = 42;
-      ic->y = 28;
+      actorSetImagePos(self->pc, (Int2) { 42, 28 });
    }
 }
 
 static void _updateLight(PCManager *self) {
-   LightComponent *lc = entityGet(LightComponent)(self->pc);
-   
+   LightSource *ls = actorGetLightSource(self->pc);
+   LightSourceParams light;
+
    if (self->usingTorch && !self->sneaking) {
-      lc->centerLevel = MAX_BRIGHTNESS;
-      lc->radius = 0;
-      lc->fadeWidth = MAX_BRIGHTNESS;
+      light.centerLevel = MAX_BRIGHTNESS;
+      light.radius = 0;
+      light.fadeWidth = 4;
    }
    else {
-      lc->centerLevel = 2;
-      lc->radius = 0;
-      lc->fadeWidth = 2;
+      light.centerLevel = 2;
+      light.radius = 0;
+      light.fadeWidth = 2;
    }
 
+   lightSourceSetParams(ls, light);
+}
+
+static void _testLightFlicker(PCManager *self) {
+   static bool flickering = false;
+   static Milliseconds period = 500;
+   static Microseconds startTime = 0;
+   Milliseconds delta = 0;
+   
+   
+   if (startTime == 0) {
+      startTime = gameClockGetTime();
+   }
+
+   delta = t_u2m(gameClockGetTime() - startTime);
+
+   if (delta >= period) {
+      LightSource *ls = actorGetLightSource(self->pc);
+      LightSourceParams light;
+
+      light.centerLevel = MAX_BRIGHTNESS;
+      light.radius = 5;
+      light.fadeWidth = flickering ? 5 : 4;
+
+      lightSourceSetParams(ls, light);
+      startTime += t_m2u(period);
+      flickering = !flickering;
+   }
 }
 
 void pcManagerUpdate(PCManager *self) {
    Viewport *vp = self->view->viewport;
-   PositionComponent *pc = entityGet(PositionComponent)(self->pc);
-   int gridWidth = gridManagerWidth(self->view->managers->gridManager) * GRID_CELL_SIZE;
-   int gridHeight = gridManagerHeight(self->view->managers->gridManager) * GRID_CELL_SIZE;
+   Int2 aPos = actorGetWorldPosition(self->pc);
+   int gridWidth = gridManagerWidth(self->view->gridManager) * GRID_CELL_SIZE;
+   int gridHeight = gridManagerHeight(self->view->gridManager) * GRID_CELL_SIZE;
    int xCenter = (GRID_WIDTH / 2) * GRID_CELL_SIZE;
    int yCenter = (GRID_HEIGHT / 2) * GRID_CELL_SIZE;
-   int xOffset = MIN(gridWidth - (vp->region.width), MAX(0, pc->x - xCenter));
-   int yOffset = MIN(gridHeight - (vp->region.height), MAX(0, pc->y - yCenter));
+   int xOffset = MIN(gridWidth - (vp->region.width), MAX(0, aPos.x - xCenter));
+   int yOffset = MIN(gridHeight - (vp->region.height), MAX(0, aPos.y - yCenter));
 
    vp->worldPos = (Int2) { xOffset, yOffset };
+
+   //if (self->usingTorch && !self->sneaking) {
+   //   _testLightFlicker(self);
+   //}
 }
 
 void pcManagerCreatePC(PCManager *self) {
-   self->pc = entityCreate(self->view->entitySystem);
-   COMPONENT_ADD(self->pc, PositionComponent, 0, 0);
-   COMPONENT_ADD(self->pc, SizeComponent, 14, 14);
-   //COMPONENT_ADD(self->pc, RectangleComponent, 0);
+   self->pc = actorManagerCreateActor(self->view->actorManager);
 
-   COMPONENT_ADD(self->pc, ImageComponent, .imgID = stringIntern(IMG_TILE_ATLAS), .partial = true, .x = 56, .y = 28, .width = 14, .height = 14);
-   COMPONENT_ADD(self->pc, LayerComponent, LayerGrid);
-   COMPONENT_ADD(self->pc, InViewComponent, 0);
-   COMPONENT_ADD(self->pc, GridComponent, 7, 2);
-   COMPONENT_ADD(self->pc, LightComponent, .radius = 0, .centerLevel = 0, .fadeWidth = 0);
-   COMPONENT_ADD(self->pc, ActorComponent, .moveTime = DEFAULT_MOVE_SPEED, .moveDelay = DEFAULT_MOVE_DELAY);
+
+   actorSetMoveDelay(self->pc, DEFAULT_MOVE_DELAY);
+   actorSetMoveTime(self->pc, DEFAULT_MOVE_SPEED);
+
+   actorSetImage(self->pc, stringIntern(IMG_TILE_ATLAS));
 
    _updateLight(self);
    _updateSprite(self);
-   entityUpdate(self->pc);
 
    luaActorMakeActorGlobal(self->view->L, self->pc, LLIB_PLAYER);
 }
 
 void pcManagerStop(PCManager *self) {
-   gridMovementManagerStopEntity(self->view->managers->gridMovementManager, self->pc);
+   actorStop(self->pc);
 }
 
 void pcManagerMove(PCManager *self, short x, short y) {
-   gridMovementManagerMoveEntity(self->view->managers->gridMovementManager, self->pc, x, y);
+   actorMove(self->pc, x, y);
 }
 
 void pcManagerMoveRelative(PCManager *self, short x, short y) {
-   gridMovementManagerMoveEntityRelative(self->view->managers->gridMovementManager, self->pc, x, y);
+   actorMoveRelative(self->pc, x, y);
 }
 
 void pcManagerToggleTorch(PCManager *self) {

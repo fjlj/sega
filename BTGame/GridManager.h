@@ -2,8 +2,8 @@
 
 #include "segautils/Defs.h"
 #include "segautils/Rect.h"
-#include "Entities/Entities.h"
 #include "Tiles.h"
+#include "Actors.h"
 
 typedef struct Map_t Map;
 typedef struct GridManager_t GridManager;
@@ -27,7 +27,19 @@ typedef struct WorldView_t WorldView;
 
 typedef struct OcclusionCell_t OcclusionCell;
 
-GridManager *createGridManager(WorldView *view);
+typedef struct GridToken_t GridToken;//ties an actor to the grid partition table
+void gridTokenDestroy(GridToken *self);
+void gridTokenMove(GridToken *self, Int2 newPos);
+
+GridManager *gridManagerCreate(WorldView *view);
+void gridManagerDestroy(GridManager *self);
+
+GridToken *gridManagerCreateToken(GridManager *self, Actor *owner);
+
+typedef struct LightSource_t LightSource;
+LightSource *gridManagerCreateLightSource(GridManager *self);//the gr5id manager owns the light source so
+
+
 void gridManagerRender(GridManager *self, Frame *frame);
 void gridManagerRenderLighting(GridManager *self, Frame *frame);
 void gridManagerSetAmbientLight(GridManager *self, byte level);
@@ -35,17 +47,15 @@ void gridManagerSetAmbientLight(GridManager *self, byte level);
 Map *gridManagerGetMap(GridManager *self);
 void gridManagerLoadMap(GridManager *self, Map *map);
 
-void gridManagerClearSchemas(GridManager *self);
+void gridManagerLoadSchemaTable(GridManager *self, const char *set);
 TileSchema *gridManagerGetSchema(GridManager *self, size_t index);
 size_t gridManagerGetSchemaCount(GridManager *self);
 void gridManagerRenderSchema(GridManager *self, size_t index, Frame *frame, FrameRegion *vp, short x, short y);
 
-void gridManagerSnapEntity(GridManager *self, Entity *e);
-
-//returns pointer to the entity array that contains all gridded entities currently in view
-vec(EntityPtr) *gridManagerQueryEntities(GridManager *self);
-void gridManagerQueryEntitiesRect(GridManager *self, Recti area, vec(EntityPtr) *outlist);
-Entity *gridMangerEntityFromScreenPosition(GridManager *self, Int2 pos);
+//returns pointer to the actor array that contains all gridded entities currently in view
+vec(ActorPtr) *gridManagerQueryActors(GridManager *self);
+void gridManagerQueryActorsRect(GridManager *self, Recti area, vec(ActorPtr) *outlist);
+Actor *gridManagerActorFromScreenPosition(GridManager *self, Int2 pos);
 
 short gridManagerWidth(GridManager *self);
 short gridManagerHeight(GridManager *self);
@@ -55,9 +65,22 @@ short gridManagerHeight(GridManager *self);
 int gridManagerQueryOcclusion(GridManager *self, Recti *area, OcclusionCell *grid);
 
 size_t gridManagerCellIDFromXY(GridManager *self, int x, int y);
+size_t gridManagerCellFromTile(GridManager *self, Tile *t);
 void gridManagerXYFromCellID(GridManager *self, size_t ID, int *x, int *y);
 Tile *gridManagerTileAt(GridManager *self, size_t index);
 Tile *gridManagerTileAtXY(GridManager *self, int x, int y);
 Tile *gridManagerTileAtScreenPos(GridManager *self, int x, int y);
+
+//use this or else lighting wont be udpated
+void gridManagerChangeTileSchema(GridManager *self, size_t tile, byte schema);
+
+int gridDistance(int x0, int y0, int x1, int y1);
+
+void gridManagerToggleLightMode(GridManager *self);
+void gridManagerDebugLights(GridManager *self, Int2 source, Int2 target);//WORLD CGRID COORDS
+
+void gridManagerSaveSnapshot(GridManager *self);
+void gridManagerUndo(GridManager *self);
+void gridManagerRedo(GridManager *self);
 
 

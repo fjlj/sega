@@ -3,11 +3,26 @@
 #include "segalib/EGA.h"
 
 #include "Viewport.h"
-#include "Entities/Entities.h"
-#include "CoreComponents.h"
 
 #include <math.h>
 #include "segautils/Math.h"
+#include "segautils/StandardVectors.h"
+#include "LightDebugger.h"
+#include "WorldView.h"
+#include "GridManager.h"
+#include <stdio.h>
+
+struct LightData_t {
+   byte level;
+   byte flags;
+   bool tileLightAdded;
+};
+
+byte lightDataGetLevel(LightData *self) {
+   return self->level;
+}
+
+#define TILE_GRID_SIZE 8 //height and width of a block of tilesd for purpose of light storage
 
 #pragma region MASKS
 
@@ -50,22 +65,192 @@ static const byte LightMasks[LIGHT_LEVEL_COUNT][16] =
 
 #pragma endregion
 
+struct LightSource_t {
+   LightGrid *parent;
+   LightSourceParams params;
+   Int2 pos;
+   Recti AABB;
+};
+
+typedef LightSource *LightSourcePtr;
+#define VectorT LightSourcePtr
+#include "segautils/Vector_Create.h"
+
+void lightSourcePtrDestroy(LightSourcePtr *self) {
+   checkedFree(*self);
+}
+
+typedef struct {
+   vec(size_t) *tiles;//can be null if nothings in it!!
+}TileLights;
+
+#define VectorT TileLights
+#include "segautils/Vector_Create.h"
+
+void tileLightsDestroy(TileLights *self) {
+   if (self->tiles) {
+      vecDestroy(size_t)(self->tiles);
+   }
+}
+
+typedef struct  {
+   size_t index;
+   byte set;
+}OcclusionMapEntry;
+
+#define VectorT OcclusionMapEntry
+#include "segautils/Vector_Create.h"
+
 typedef struct LightGrid_t {
+   WorldView *view;
    LightData grid[LIGHT_GRID_CELL_COUNT];
    OcclusionCell *occlusion;
-   GridManager *parent;
    byte ambientLevel;
+   vec(LightSourcePtr) *sources;
+
+   vec(TileLights) *tileGrid;
+   Int2 tileSize;
+   size_t tileCount;
+   vec(size_t) *usedLights;//used to stop double-lighting
+   vec(OcclusionMapEntry) *occMap;
+   Int2 vpPos;//set by update
+   Recti lightArea;//for testing
 }LightGrid;
 
-LightGrid *lightGridCreate(GridManager *parent) {
+LightGrid *lightGridCreate(WorldView *view) {
    LightGrid *out = checkedCalloc(1, sizeof(LightGrid));
    out->occlusion = checkedCalloc(LIGHT_GRID_CELL_COUNT, sizeof(OcclusionCell));
-   out->parent = parent;
+   out->view = view;
+
+   out->sources = vecCreate(LightSourcePtr)(&lightSourcePtrDestroy);
+   out->tileGrid = vecCreate(TileLights)(&tileLightsDestroy);
+   out->usedLights = vecCreate(size_t)(NULL);
+   out->occMap = vecCreate(OcclusionMapEntry)(NULL);
    return out;
 }
 void lightGridDestroy(LightGrid *self) {
+   vecDestroy(LightSourcePtr)(self->sources);
+   vecDestroy(TileLights(self->tileGrid));
+   vecDestroy(size_t)(self->usedLights);
+   vecDestroy(OcclusionMapEntry)(self->occMap);
    checkedFree(self->occlusion);
    checkedFree(self);
+}
+
+void lightGridLoadMap(LightGrid *self, int width, int height) {
+   vecClear(TileLights(self->tileGrid));
+
+   self->tileSize.x = width / TILE_GRID_SIZE + (width%TILE_GRID_SIZE > 0 ? 1 : 0);
+   self->tileSize.y = height / TILE_GRID_SIZE + (height%TILE_GRID_SIZE > 0 ? 1 : 0);
+   self->tileCount = self->tileSize.x * self->tileSize.y;
+
+   vecResize(TileLights)(self->tileGrid, self->tileCount, &(TileLights){0});
+}
+
+static Recti _tileAABB(TileSchema *schema, Int2 pos) {
+   int adjRadius = MAX(0, MAX(schema->radius, schema->fadeWidth));
+   return (Recti) {
+      pos.x - adjRadius,
+      pos.y - adjRadius,
+      pos.x + adjRadius + 1,
+      pos.y + adjRadius + 1
+   };
+}
+
+static Recti _tileGridAABB(LightGrid *self, const Recti *tileaabb) {
+   return (Recti) {
+      MAX(0, tileaabb->left / TILE_GRID_SIZE),
+      MAX(0, tileaabb->top / TILE_GRID_SIZE),
+      MIN(self->tileSize.x - 1, tileaabb->right / TILE_GRID_SIZE),
+      MIN(self->tileSize.y - 1, tileaabb->bottom / TILE_GRID_SIZE)
+   };
+}
+
+static size_t _tileGridIndex(LightGrid *self, Int2 pos) {
+   size_t out = pos.y * self->tileSize.x + pos.x;
+   if (out >= self->tileCount) {
+      return INF;
+   }
+   return out;
+}
+
+void lightGridChangeTileSchema(LightGrid *self, size_t tile, TileSchema *schema) {
+   Int2 pos = { 0 };
+   GridManager *gm = self->view->gridManager;
+   Tile *t = gridManagerTileAt(gm, tile);
+   TileSchema *oldSchema = gridManagerGetSchema(gm, tileGetSchema(t));
+
+   gridManagerXYFromCellID(gm, tile, &pos.x, &pos.y);
+
+   //remove the old tile from the light grid table
+   if (oldSchema && oldSchema->lit) {      
+      Recti taabb = _tileAABB(oldSchema, pos);
+      Recti aabb = _tileGridAABB(self, &taabb);
+      int x, y;
+
+      for (y = aabb.top; y <= aabb.bottom; ++y) {
+         for (x = aabb.left; x <= aabb.right; ++x) {
+            size_t index = _tileGridIndex(self, (Int2) { x, y });
+            if (index < INF) {
+               TileLights *tl = vecAt(TileLights)(self->tileGrid, index);
+               if (tl->tiles) {
+                  vecRemove(size_t)(tl->tiles, &tile);
+               }
+            }
+         }
+      }
+   }
+
+   //and add the new one
+   if (schema && schema->lit) {
+      Recti taabb = _tileAABB(schema, pos);
+      Recti aabb = _tileGridAABB(self, &taabb);
+      int x, y;
+
+      for (y = aabb.top; y <= aabb.bottom; ++y) {
+         for (x = aabb.left; x <= aabb.right; ++x) {
+            size_t index = _tileGridIndex(self, (Int2) { x, y });
+            if (index < INF) {
+               TileLights *tl = vecAt(TileLights)(self->tileGrid, index);
+               if (!tl->tiles) {
+                  tl->tiles = vecCreate(size_t)(NULL);
+               }
+               vecPushBack(size_t)(tl->tiles, &tile);
+            }
+         }
+      }
+   }
+}
+
+LightSource *lightGridCreateLightSource(LightGrid *self) {
+   LightSource *out = checkedCalloc(1, sizeof(LightSource));
+   out->parent = self;
+   out->params.on = true;
+   vecPushBack(LightSourcePtr)(self->sources, &out);
+   return out;
+}
+
+static void _updateLightSourceAABB(LightSource *self) {
+   int x = self->pos.x / GRID_CELL_SIZE;
+   int y = self->pos.y / GRID_CELL_SIZE;
+   int adjRadius = MAX(0, MAX(self->params.radius, self->params.fadeWidth));
+
+   self->AABB.left = x - adjRadius;
+   self->AABB.top = y - adjRadius;
+   self->AABB.right = x + adjRadius + 1;
+   self->AABB.bottom = y + adjRadius + 1;
+}
+
+void lightSourceSetParams(LightSource *self, LightSourceParams params) {
+   self->params = params;
+   _updateLightSourceAABB(self);
+}
+void lightSourceSetPosition(LightSource *self, Int2 pos) {
+   self->pos = pos;
+   _updateLightSourceAABB(self);
+}
+void lightSourceDestroy(LightSource *self) {
+   vecRemove(LightSourcePtr)(self->parent->sources, &self);
 }
 
 typedef struct {
@@ -80,19 +265,130 @@ typedef struct  {
    bool occludedTarget;
    OcclusionCell *oList;
    int oCount;
+   LightGrid *lg;
 }BlockCheckData;
 
-static bool _lineIsBlocked(Int2 origin, Int2 target, BlockCheckData *data) {
-   int i;
-   for (i = 0; i < data->oCount; ++i) {
-      OcclusionCell *oc = data->oList + i;
+static bool _lineIsBlocked(Int2 origin, Int2 target, bool occludingOrigin, LightGrid *lg) {
+   int w = rectiWidth(&lg->lightArea);
+   int dx = target.x - origin.x;
+   int dy = target.y - origin.y;
+   int steps = MAX(1, abs(dx) > abs(dy) ? abs(dx) : abs(dy));
+   float xinc = dx / (float)steps;
+   float yinc = dy / (float)steps;
+   float fx = (float)origin.x, fy = (float)origin.y;
+   float interx, intery;
+   int i = 0;
+   size_t currentTile = INF;
+   static float iSize = 1.0f / GRID_CELL_SIZE;
+   byte lastSet = 0;
+   bool insideBlock = false;
+   int passedSets = 0;
 
-      if (lineSegmentIntersectsAABBi(origin, target, &oc->area)) {
-         if (data->occludedTarget && abs(data->targetCell.x - oc->x) + abs(data->targetCell.y - oc->y) < 1) {
-            continue;
+   //half-pixel :D
+   fx += iSize * 0.5f;
+   fy += iSize * 0.5f;
+
+   for (i = 0; i < steps; ++i) {
+      size_t t = 0;
+      int ix, iy;
+      fx += xinc;
+      fy += yinc;
+
+      interx = fx * iSize;
+      intery = fy * iSize;
+
+      //floating-truncation for negative coords needs to work in reverse!
+      // -1.5 -> -2
+      if (interx < 0.0f && origin.x < target.x) { interx = floorf(interx); }
+      if (intery < 0.0f && origin.y < target.y) { intery = floorf(intery); }
+
+      ix = (int)(interx);
+      iy = (int)(intery);
+
+      ix = ix + lg->vpPos.x - lg->lightArea.left;
+      iy = iy + lg->vpPos.y - lg->lightArea.top;
+      t = iy * w + ix;
+
+      if (t != currentTile) {
+         OcclusionMapEntry *ome = vecAt(OcclusionMapEntry)(lg->occMap, t);
+         bool tileOccludes = ome->index < INF;
+         bool occludersEncountered = lastSet > 0;
+
+
+         /*
+         if exiting my first set of blocks and origin doesnt occlude, we're blocked
+         if exiting my first set of blocks and origin does occlude, we're only blocked if exiting the sides or top
+         if exiting my 2nd set of blocks and origin occludes, we're blocked
+         
+         
+         */
+
+         if (tileOccludes) {
+            if (!insideBlock) {
+               //ENTERING BLOCK
+               insideBlock = true;
+            }
+            
          }
-         return true;
+         else {
+
+
+            if (insideBlock) {
+
+               //EXITING BLOCK
+               insideBlock = false;
+               ++passedSets;
+
+               if (occludingOrigin) {
+                  if (target.y <= (origin.y + GRID_CELL_SIZE)) {
+                     return true;
+                  }
+
+                  if (passedSets >= 2) {
+                     return true;
+                  }
+               }
+               else {
+                  return true;
+               }
+            }
+
+         }
+
+         //if (ome->index < INF) {//if the current tile occludes
+
+         //   if (lastSet == 0) {//if its out first set weve reached
+         //      lastSet = ome->set;//set it and continue
+         //   }
+         //   else {
+         //      if (occludingOrigin && hasExited) {
+         //         passingThroughEdge = true;
+         //      }
+         //      else {
+         //         return true;
+         //      }
+         //      
+         //   }
+         //}
+         //else if (lastSet > 0) {//this tile doesnt occlude but weve been through a set(so we're pasing out the other end)
+         //   hasExited = true;
+         //   if (occludingOrigin) {
+         //      if (passingThroughEdge) {
+         //         return true;
+         //      }
+
+         //      if (target.y <= (origin.y + GRID_CELL_SIZE)) {
+         //         return true;
+         //      }
+
+         //   }
+         //   else {
+         //      return true;
+         //   }
+         //}
+         currentTile = t;
       }
+
    }
 
    return false;
@@ -105,119 +401,153 @@ any less than (25 - FULLY_LIT_THRESHOLD + 1) _blocked_ rays will result in no da
 counts if enough blocked rays havent been found by given intervals
 Also, if the target is an occluder itself, it only needs to verify that a single edge is lit (defined by 4 of the 5 rays hitting each of two corners)
 */
-#define FULLY_LIT_THRESHOLD 13
 
-static byte _calculateOcclusionOnPoint(byte calculatedLevel, Int2 target, Int2 origin, OcclusionCell *oList, int oCount ) {
-   static const float invertedThreshold = 1.0f / (float)FULLY_LIT_THRESHOLD;
-   static const int minimumBlocksForShading = 25 - FULLY_LIT_THRESHOLD + 1;
-   static const int cornerBlockedThreshold = 4;
+#define CHECK_COUNT 16
+#define MINIMUM_BLOCKED_RAYS_TO_DARKEN 5
+#define FULLY_LIT_THRESHOLD (CHECK_COUNT - MINIMUM_BLOCKED_RAYS_TO_DARKEN)
 
-   int i;
-   int lopLeftBlocked = 0, topRightBlocked = 0, bottomRightBlocked = 0, bottomLeftBlocked = 0;
-   //build our rects... shifting by 1 for precision
-   Recti originArea = {
-      .left = (origin.x * GRID_CELL_SIZE) << 1,
-      .top = (origin.y * GRID_CELL_SIZE) << 1,
-      .right = (origin.x * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1,
-      .bottom = (origin.y * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1
+static void _buildOccRects(Int2 target, Int2 origin, Recti *originArea, Recti *targetArea, Int2 *orCenter, Int2 *tarCenter) {
+   *originArea = (Recti){
+      .left = (origin.x * GRID_CELL_SIZE),
+      .top = (origin.y * GRID_CELL_SIZE),
+      .right = (origin.x * GRID_CELL_SIZE + GRID_CELL_SIZE),
+      .bottom = (origin.y * GRID_CELL_SIZE + GRID_CELL_SIZE)
    };
 
-   Recti targetArea = {
-      .left = (target.x * GRID_CELL_SIZE) << 1,
-      .top = (target.y * GRID_CELL_SIZE) << 1,
-      .right = (target.x * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1,
-      .bottom = (target.y * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1
-   };   
+   *targetArea = (Recti){
+      .left = (target.x * GRID_CELL_SIZE),
+      .top = (target.y * GRID_CELL_SIZE),
+      .right = (target.x * GRID_CELL_SIZE + GRID_CELL_SIZE),
+      .bottom = (target.y * GRID_CELL_SIZE + GRID_CELL_SIZE)
+   };
 
-   Int2 orCenter = { originArea.left + GRID_CELL_SIZE, originArea.top + GRID_CELL_SIZE };
-   Int2 tarCenter = { targetArea.left + GRID_CELL_SIZE, targetArea.top + GRID_CELL_SIZE };
+   *orCenter = (Int2){ originArea->left + (GRID_CELL_SIZE >> 1), originArea->top + (GRID_CELL_SIZE >> 1)};
+   *tarCenter = (Int2){ targetArea->left + (GRID_CELL_SIZE >> 1), targetArea->top + (GRID_CELL_SIZE >> 1) };
+
+   originArea->left += 1;
+   originArea->top += 1;
+   originArea->right -= 2;
+   originArea->bottom -= 2;
+
+   targetArea->left += 1;
+   targetArea->top += 1;
+   targetArea->right -= 1;
+   targetArea->bottom -= 1;
+}
+
+static byte _calculateOcclusionOnPoint(byte calculatedLevel, Int2 target, Int2 origin, bool occludingOrigin, LightGrid *self) {
+   static const float invertedThreshold = 1.0f / (float)FULLY_LIT_THRESHOLD;
    int occBlocks;
+   Int2 orCenter, tarCenter;
+   Recti originArea, targetArea;
 
-   BlockCheckData checkData = { {target.x, target.y}, false, oList, oCount };
+   _buildOccRects(target, origin, &originArea, &targetArea, &orCenter, &tarCenter);
 
-   for (i = 0; i < oCount; ++i) {
-      OcclusionCell *oc = oList + i;
-      if (oc->x == target.x && oc->y == target.y) {
-         checkData.occludedTarget = true;
-         break;
-      }
-   }
+   occBlocks = 0;
 
-   if (!_lineIsBlocked(orCenter, tarCenter, &checkData)) {
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.left, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.right, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.left, targetArea.bottom }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.right, targetArea.bottom }, occludingOrigin, self);
+
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.left, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.right, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.left, targetArea.bottom }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.right, targetArea.bottom }, occludingOrigin, self);
+   
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.left, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.right, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.left, targetArea.bottom }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.right, targetArea.bottom }, occludingOrigin, self);
+
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.left, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.right, targetArea.top }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.left, targetArea.bottom }, occludingOrigin, self);
+   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.right, targetArea.bottom }, occludingOrigin, self);
+
+   if (occBlocks < MINIMUM_BLOCKED_RAYS_TO_DARKEN) {
       return calculatedLevel;
    }
 
-   originArea.left += 1;
-   originArea.top += 1;
-   originArea.right -= 1;
-   originArea.bottom -= 1;
+   return (byte)(calculatedLevel * ((CHECK_COUNT - occBlocks) * invertedThreshold));
+}
 
-   targetArea.left += 1;
-   targetArea.top += 1;
-   targetArea.right -= 1;
-   targetArea.bottom -= 1;
+FILE *f;
 
-   occBlocks = 1;
+static void addDebugRay(Int2 r1, Int2 r2, LightGrid *self) {
+   LightDebugger * lb = self->view->lightDebugger;
+   bool blocked = _lineIsBlocked(r1, r2, true, self);
 
-   occBlocks += _lineIsBlocked(orCenter, (Int2) { targetArea.left, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked(orCenter, (Int2) { targetArea.right, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked(orCenter, (Int2) { targetArea.left, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked(orCenter, (Int2) { targetArea.right, targetArea.bottom }, &checkData);
+   lightDebuggerAddRay(lb, r1, r2, blocked);
 
-   lopLeftBlocked = occBlocks;
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.left, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.right, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.left, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.right, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.top }, tarCenter, &checkData);
-   lopLeftBlocked = occBlocks - lopLeftBlocked;
+   fprintf(f, "RAY: (%i, %i) to (%i, %i) %s\n", r1.x, r1.y, r2.x, r2.y, blocked ? "BLOCKED" : "CLEAR");
+}
 
-   topRightBlocked = occBlocks;
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.left, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.right, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.left, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.right, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.top }, tarCenter, &checkData);
-   topRightBlocked = occBlocks - topRightBlocked;
+void lightGridDebug(LightGrid *self, Int2 source, Int2 target) {
+   Int2 orCenter, tarCenter;
+   Recti originArea, targetArea;
 
-   //short circuiting, less than 3 blockers here means there wont be enough blocking to dim the light
-   if (occBlocks < (minimumBlocksForShading - 10) || (checkData.occludedTarget && lopLeftBlocked <= cornerBlockedThreshold && topRightBlocked <= cornerBlockedThreshold)) {
-      return calculatedLevel;
+
+   LightDebugger * lb = self->view->lightDebugger;
+
+   f = fopen("lightdebug.txt", "wt");
+   
+   _buildOccRects(target, source, &originArea, &targetArea, &orCenter, &tarCenter);
+   lightDebuggerStartNewSet(lb, originArea, targetArea);
+
+   fprintf(f, "SOURCE - LEFT: %i   TOP: %i   RIGHT: %i   BOTTOM: %i\n", originArea.left, originArea.top, originArea.right, originArea.bottom);
+   fprintf(f, "TARGET - LEFT: %i   TOP: %i   RIGHT: %i   BOTTOM: %i\n", targetArea.left, targetArea.top, targetArea.right, targetArea.bottom);
+
+
+   addDebugRay((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.left, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.right, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.left, targetArea.bottom }, self);
+   addDebugRay((Int2) { originArea.left, originArea.top }, (Int2) { targetArea.right, targetArea.bottom }, self);
+
+   addDebugRay((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.left, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.right, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.left, targetArea.bottom }, self);
+   addDebugRay((Int2) { originArea.right, originArea.top }, (Int2) { targetArea.right, targetArea.bottom }, self);   
+
+   addDebugRay((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.left, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.right, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.left, targetArea.bottom }, self);
+   addDebugRay((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.right, targetArea.bottom }, self);
+
+   addDebugRay((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.left, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.right, targetArea.top }, self);
+   addDebugRay((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.left, targetArea.bottom }, self);
+   addDebugRay((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.right, targetArea.bottom }, self);
+
+   fclose(f);
+
+   return;
+}
+
+
+//returns nonzero if invalid or already processed
+static int _processOcclusionNeighbors(LightGrid *self, Recti *area, int x, int y, byte set) {
+   int w = rectiWidth(area);
+   int h = rectiHeight(area);
+   size_t index = y*w + x;
+   OcclusionMapEntry *ome = NULL;
+
+   if (x < 0 || x >= w || y < 0 || y >= h) {
+      return 1;
    }
 
-   bottomRightBlocked = occBlocks;
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.left, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.right, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.left, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, (Int2) { targetArea.right, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.right, originArea.bottom }, tarCenter, &checkData);
-   bottomRightBlocked = occBlocks - bottomRightBlocked;
-
-   //short circuiting, same here, the minimum number of unlblocked rays for a fully lit tile is 13
-   if (occBlocks < (minimumBlocksForShading - 5) || (checkData.occludedTarget && bottomRightBlocked <= cornerBlockedThreshold && topRightBlocked <= cornerBlockedThreshold)) {
-      return calculatedLevel;
+   ome = vecAt(OcclusionMapEntry)(self->occMap, index);
+   if (ome->index == INF || ome->set != 0) {
+      return 1;
    }
 
-   bottomLeftBlocked = occBlocks;
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.left, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.right, targetArea.top }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.left, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, (Int2) { targetArea.right, targetArea.bottom }, &checkData);
-   occBlocks += _lineIsBlocked((Int2) { originArea.left, originArea.bottom }, tarCenter, &checkData);
-   bottomLeftBlocked = occBlocks - bottomLeftBlocked;
+   ome->set = set;
+   _processOcclusionNeighbors(self, area, x - 1, y, set);
+   _processOcclusionNeighbors(self, area, x, y - 1, set);
+   _processOcclusionNeighbors(self, area, x + 1, y, set);
+   _processOcclusionNeighbors(self, area, x, y + 1, set);
 
-   if (occBlocks < minimumBlocksForShading) {
-      return calculatedLevel;
-   }
-
-   if (checkData.occludedTarget) {
-      if ((lopLeftBlocked <= cornerBlockedThreshold || bottomRightBlocked <= cornerBlockedThreshold) &&
-          (topRightBlocked <= cornerBlockedThreshold || bottomLeftBlocked <= cornerBlockedThreshold)) {
-         return calculatedLevel;
-      }
-   }
-
-   return (byte)(calculatedLevel * ((25 - occBlocks) * invertedThreshold));
+   return 0;
 }
 
 static void _addPoint(LightGrid *self, PointLight light) {   
@@ -228,6 +558,14 @@ static void _addPoint(LightGrid *self, PointLight light) {
    int x, y;
    int i;
    float widthFactor = 0.0f;
+   bool originOccludes = false;
+   GridManager *gm = self->view->gridManager;
+
+   {
+      int i = (5 << 1) + 1;
+      float r = (i*i) / 2.0f;
+      
+   }
 
    //bound the brightness (0 - max) and radius (0 - level/radius whichever's bigger)
    adjLevel = MIN(MAX(light.level, 0), MAX_BRIGHTNESS);
@@ -238,14 +576,15 @@ static void _addPoint(LightGrid *self, PointLight light) {
       widthFactor = adjLevel / (float)light.fadeWidth;
    }
    
-   r2 = adjRadius * adjRadius;
+   //add 0.5 to radius before squaring, this is for quick distance checks
+   r2 = ((((adjRadius << 1) + 1) * ((adjRadius << 1) + 1)) >> 2);
    
    //create our area bounded within the vp
    unboundedLightArea = (Recti){
       .left =   light.origin.x - adjRadius,
       .top =    light.origin.y - adjRadius,
-      .right =  light.origin.x + adjRadius,
-      .bottom = light.origin.y + adjRadius
+      .right =  light.origin.x + adjRadius + 1,
+      .bottom = light.origin.y + adjRadius + 1
    };
 
    lightArea = (Recti){
@@ -264,15 +603,51 @@ static void _addPoint(LightGrid *self, PointLight light) {
    }
 
    //get our occlusion list and generate their rects
-   occluderCount = gridManagerQueryOcclusion(self->parent, &unboundedLightArea, self->occlusion);
-   for (i = 0; i < occluderCount; ++i) {
-      OcclusionCell *oc = self->occlusion + i;
-      oc->area = (Recti){
-         .left = ((oc->x * GRID_CELL_SIZE) << 1),
-         .top = ((oc->y * GRID_CELL_SIZE) << 1),
-         .right = ((oc->x * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1),
-         .bottom = ((oc->y * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1)
-      };
+   //gridmanager will modify our rect to not go out of bounds
+   occluderCount = gridManagerQueryOcclusion(gm, &unboundedLightArea, self->occlusion);
+   self->lightArea = unboundedLightArea;
+   if (occluderCount > 0) {
+      int left = self->lightArea.left;
+      int top = self->lightArea.top;
+      int w = rectiWidth(&self->lightArea);
+      int h = rectiHeight(&self->lightArea);
+      byte currentSet = 1;
+      vecClear(OcclusionMapEntry)(self->occMap);
+      vecResize(OcclusionMapEntry)(self->occMap, w * h, &(OcclusionMapEntry){INF, 0});
+
+      for (i = 0; i < occluderCount; ++i) {
+         OcclusionCell *oc = self->occlusion + i;
+         oc->area = (Recti) {
+            .left = ((oc->x * GRID_CELL_SIZE) << 1),
+            .top = ((oc->y * GRID_CELL_SIZE) << 1),
+            .right = ((oc->x * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1),
+            .bottom = ((oc->y * GRID_CELL_SIZE + GRID_CELL_SIZE) << 1)
+         };
+
+         //now save the indices into our occArray into their correct places inside the occMap    
+         {
+            int occX = oc->wx - left;
+            int occY = oc->wy - top;
+            size_t occMapIndex = occY * w + occX;
+
+            if (oc->wx - self->vpPos.x == light.origin.x &&
+               oc->wy - self->vpPos.y == light.origin.y) {
+               //origin occludes!
+               originOccludes = true;
+            }
+
+            vecAt(OcclusionMapEntry)(self->occMap, occMapIndex)->index = i;
+         }   
+      }
+
+      //for (i = 0; i < occluderCount; ++i) {
+      //   OcclusionCell *oc = self->occlusion + i;
+      //   int occX = oc->wx - left;
+      //   int occY = oc->wy - top;
+      //   if (!_processOcclusionNeighbors(self, &self->lightArea, occX, occY, currentSet)) {
+      //      ++currentSet;
+      //   }
+      //}
    }
 
    //brute force the whole area, we can square-check each tile without having to sqrt a bunch
@@ -293,100 +668,89 @@ static void _addPoint(LightGrid *self, PointLight light) {
                   calculatedLevel, //starting level
                   (Int2) { x, y }, //cell pos
                   (Int2) { light.origin.x , light.origin.y }, //light's origin
-                  self->occlusion, occluderCount); //the occluder data
-            }
-            
-
-            if (calculatedLevel) {
-               lightGridAt(self, x, y)->flags |= LIGHTFLAGS_DIRECTLYLIT;
-            }
+                  originOccludes,
+                  self); //the occluder data
+            }            
 
             //all done, add it in
             lightGridAt(self, x, y)->level += calculatedLevel;
          }
       }
    }
-
-   //this is a really hacky implementation of trying to light up contiguous squares but it is bad
-   //{
-   //   bool refresh = false;
-   //   //we want to do some post processing on occluders to shade in some that may have gotten missed
-   //   //if a tile is an occluder and has LIT occluders adjacent to it, it should be lit
-   //   do {
-   //      refresh = false;
-   //      for (i = 0; i < occluderCount; ++i) {
-   //         OcclusionCell *oc = self->occlusion + i;
-   //         LightData *light = lightGridAt(self, oc->x, oc->y);
-
-   //         if (light && light->level == 0) {
-   //            int i;
-   //            for (i = 0; i < occluderCount; ++i) {
-   //               OcclusionCell *oc2 = self->occlusion + i;
-   //               LightData *light2 = lightGridAt(self, oc2->x, oc2->y);
-   //               if ((oc2->x == oc->x && oc2->y == oc->y + 1) ||
-   //                  (oc2->x == oc->x && oc2->y == oc->y - 1) ||
-   //                  (oc2->x == oc->x + 1 && oc2->y == oc->y) ||
-   //                  (oc2->x == oc->x - 1 && oc2->y == oc->y)) {
-   //                  if (light2 && light2->level > 0) {
-   //                     byte newLevel = MAX(light->level, (int)light2->level - 2);
-   //                     if (newLevel != light->level) {
-   //                        light->level = newLevel;
-   //                        refresh = true;
-   //                     }
-   //                  }
-   //               }
-   //            }
-   //         }
-   //      }
-   //   } while (refresh);
-   //}
 }
 
-void lightGridUpdate(LightGrid *self, EntitySystem *es, short vpx, short vpy) {
+static void _addTileLight(LightGrid *self, size_t tile, short vpx, short vpy) {
+   GridManager *gm = self->view->gridManager;
+   Tile *t = gridManagerTileAt(gm, tile);
+   Int2 tpos = { 0 };
+   TileSchema *schema = gridManagerGetSchema(gm, tileGetSchema(t));
+
+   gridManagerXYFromCellID(gm, tile, &tpos.x, &tpos.y);
+
+   if (schema->lit) {
+      PointLight p = { 0 };
+      p.origin = (Int2) {
+         .x = tpos.x - vpx,
+         .y = tpos.y - vpy
+      };
+      p.radius = schema->radius;
+      p.level = schema->centerLevel;
+      p.fadeWidth = schema->fadeWidth;
+
+      _addPoint(self, p); 
+   }
+}
+
+void lightGridUpdate(LightGrid *self, short vpx, short vpy) {
    int i = 0;
-   memset(self->grid, 0, sizeof(self->grid));
+   
+   Recti worldGrid = { vpx, vpy, vpx + LIGHT_GRID_WIDTH , vpy + LIGHT_GRID_HEIGHT };
+   Recti tileGrid = _tileGridAABB(self, &worldGrid);
+   int x, y;
 
+   self->vpPos.x = vpx;
+   self->vpPos.y = vpy;
 
+   //ambient lights/reset
+   memset(self->grid, 0, sizeof(self->grid));   
    for (i = 0; i < LIGHT_GRID_CELL_COUNT; ++i) {
       self->grid[i].level = self->ambientLevel;
    }
 
-   for (i = 0; i < LIGHT_GRID_CELL_COUNT; ++i) {
-      int x = (i % LIGHT_GRID_WIDTH) + vpx;
-      int y = (i / LIGHT_GRID_WIDTH) + vpy;
-      size_t index = gridManagerCellIDFromXY(self->parent, x, y);
-
-      if (index < INF) {
-         Tile *t = gridManagerTileAtXY(self->parent, x, y);
-         TileSchema *schema = gridManagerGetSchema(self->parent, t->schema);
-         if (schema->lit) {
-            _addPoint(self, (PointLight) {
-               .origin = {
-                  .x = x - vpx,
-                  .y = y - vpy
-               },
-                  .radius = schema->radius,
-                  .level = schema->centerLevel,
-                  .fadeWidth = schema->fadeWidth
-            });
+   //add lightsd from tiles
+   vecClear(size_t)(self->usedLights);
+   for (y = tileGrid.top; y <= tileGrid.bottom; ++y) {
+      for (x = tileGrid.left; x <= tileGrid.right; ++x) {
+         size_t index = _tileGridIndex(self, (Int2) { x, y });
+         if (index < INF) {
+            TileLights *tl = vecAt(TileLights)(self->tileGrid, index);
+            if (tl->tiles) {
+               vecForEach(size_t, i, tl->tiles, {
+                  if (vecIndexOf(size_t)(self->usedLights, i) == INF) {
+                     _addTileLight(self, *i, vpx, vpy);
+                     vecPushBack(size_t)(self->usedLights, i);
+                  }
+               });
+            }
          }
       }
    }
 
-
-   COMPONENT_QUERY(es, LightComponent, lc, {
-      Entity *e = componentGetParent(lc, es);
-      PositionComponent *pc = entityGet(PositionComponent)(e);
-
-      _addPoint(self, (PointLight) {
+   //add actor lights (from lightsources)
+   vecForEach(LightSourcePtr, src, self->sources, {
+      if (rectiIntersects(worldGrid, (*src)->AABB)) {
+         LightSourceParams *lsp = &(*src)->params;
+         Int2 *lsPos = &(*src)->pos;
+         _addPoint(self, (PointLight) {
             .origin = {
-               .x = ((pc->x + (GRID_CELL_SIZE / 2)) / GRID_CELL_SIZE) - vpx,
-               .y = ((pc->y + (GRID_CELL_SIZE / 2)) / GRID_CELL_SIZE) - vpy
+               .x = ((lsPos->x + (GRID_CELL_SIZE >> 1)) / GRID_CELL_SIZE) - vpx,
+               .y = ((lsPos->y + (GRID_CELL_SIZE >> 1)) / GRID_CELL_SIZE) - vpy
             },
-            .radius = lc->radius,
-            .level = lc->centerLevel,
-            .fadeWidth = lc->fadeWidth
-      });
+               .radius = lsp->radius,
+               .level = lsp->centerLevel,
+               .fadeWidth = lsp->fadeWidth
+         });
+      }
    });
 }
 
@@ -416,6 +780,17 @@ void lightDataRender(LightData *light, Frame *frame, FrameRegion *vp, short x, s
          if (LightMasks[light->level][maskIndex]) {
             frameRenderPoint(frame, vp, x + shadex, y + shadey, 0);
          }
+      }
+   }
+}
+
+void testLightRender(LightGrid *self, Frame *frame, Viewport *vp) {
+   int x, y;
+   for (y = self->lightArea.top; y <= self->lightArea.bottom; ++y) {
+      for (x = self->lightArea.left; x <= self->lightArea.right; ++x) {
+         int rX = x * GRID_CELL_SIZE - vp->worldPos.x;
+         int rY = y * GRID_CELL_SIZE - vp->worldPos.y;
+         frameRenderRect(frame, &vp->region, rX, rY, rX + GRID_CELL_SIZE, rY + GRID_CELL_SIZE, 5);
       }
    }
 }

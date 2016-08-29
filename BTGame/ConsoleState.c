@@ -1,23 +1,23 @@
 #include "WorldView.h"
 #include "Managers.h"
-#include "CoreComponents.h"
 #include "LightGrid.h"
 #include "Console.h"
 #include "GameState.h"
 #include "GameHelpers.h"
 #include "ImageLibrary.h"
-
-#include "Entities\Entities.h"
+#include "Weather.h"
 
 #include "SEGA\Input.h"
 #include "SEGA\App.h"
 #include "GameClock.h"
+#include "Calendar.h"
 
 #include "segashared\CheckedMemory.h"
 
 typedef struct {
    WorldView *view;
    bool pop, openEditor;
+   ManagedImage *bg;
 }ConsoleState;
 
 static void _consoleStateCreate(ConsoleState *state) {}
@@ -47,16 +47,15 @@ void _consoleOpenEditor(ConsoleState *state, GameStateOpenMapEditor *m) {
 }
 
 void _consoleEnter(ConsoleState *state, StateEnter *m) {
-   BTManagers *managers = state->view->managers;
 
-   changeBackground(state->view, IMG_BG_CONSOLE);
+   state->bg = imageLibraryGetImage(state->view->imageLibrary, stringIntern(IMG_BG_CONSOLE));
    consoleSetEnabled(state->view->console, true);
    gameClockPause(state->view->gameClock);
 
 }
 void _consoleExit(ConsoleState *state, StateExit *m) {
-   BTManagers *managers = state->view->managers;
 
+   managedImageDestroy(state->bg);
    consoleSetEnabled(state->view->console, false);
    gameClockResume(state->view->gameClock);
 }
@@ -64,11 +63,11 @@ void _consoleExit(ConsoleState *state, StateExit *m) {
 
 
 void _consoleUpdate(ConsoleState *state, GameStateUpdate *m) {
-   BTManagers *managers = state->view->managers;
+
    Mouse *mouse = appGetMouse(appGet());
    Int2 mousePos = mouseGetPosition(mouse);
 
-   cursorManagerUpdate(managers->cursorManager, mousePos.x, mousePos.y);
+   cursorManagerUpdate(state->view->cursorManager, mousePos.x, mousePos.y);
    consoleUpdate(state->view->console);
 
    if (state->pop) {
@@ -83,7 +82,6 @@ void _consoleUpdate(ConsoleState *state, GameStateUpdate *m) {
 }
 
 static void _handleKeyboard(ConsoleState *state) {
-   BTManagers *managers = state->view->managers;
    Keyboard *k = appGetKeyboard(appGet());
    KeyboardEvent e = { 0 };
 
@@ -122,11 +120,9 @@ static void _handleMouse(ConsoleState *state) {
       }
       else if (event.action == SegaMouse_Pressed) {
          if (rectiContains(vpArea, pos)) {
-            Entity *e = gridMangerEntityFromScreenPosition(state->view->managers->gridManager, pos);
-
-
-            if (e && entityGet(ActorComponent)(e)) {
-               consoleMacroActor(state->view->console, e);
+            Actor *a = gridManagerActorFromScreenPosition(state->view->gridManager, pos);
+            if (a) {
+               consoleMacroActor(state->view->console, a);
             }
             else {
                Int2 worldPos = screenToWorld(state->view, pos);
@@ -145,7 +141,21 @@ void _consoleHandleInput(ConsoleState *state, GameStateHandleInput *m) {
 }
 
 void _consoleRender(ConsoleState *state, GameStateRender *m) {
-   renderManagerRender(state->view->managers->renderManager, m->frame);
+   Frame *frame = m->frame;
+   frameClear(frame, FrameRegionFULL, 0);
+
+   frameRenderImage(m->frame, FrameRegionFULL, 0, 0, managedImageGetImage(state->bg));
+
+   gridManagerRender(state->view->gridManager, frame);
+   actorManagerRender(state->view->actorManager, frame);
+   weatherRender(state->view->weather, frame);
+   gridManagerRenderLighting(state->view->gridManager, frame);
+
+   cursorManagerRender(state->view->cursorManager, frame);
+
+   calendarRenderTestReadout(state->view->calendar, frame);
+   framerateViewerRender(state->view->framerateViewer, frame);
+   consoleRenderLines(state->view->console, frame);
 }
 
 StateClosure gameStateCreateConsole(WorldView *view) {

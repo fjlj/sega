@@ -5,10 +5,14 @@
 #include "Managers.h"
 #include "GameState.h"
 #include "ImageLibrary.h"
+#include "Sprites.h"
 #include "SEGA/App.h"
 
 #include "liblua/lauxlib.h"
 #include "liblua/lualib.h"
+
+#include "AssetHelpers.h"
+#include "GridManager.h"
 
 #include "DB.h"
 
@@ -17,8 +21,10 @@ static int slua_consoleClear(lua_State *L);
 static int slua_rand(lua_State *L);
 static int slua_toggleStats(lua_State *L);
 static int slua_openEditor(lua_State *L);
-static int slua_clearCache(lua_State *L);
+static int slua_clearImageCache(lua_State *L);
+static int slua_clearSpriteCache(lua_State *L);
 static int slua_setPalette(lua_State *L);
+static int slua_toggleLightMode(lua_State *L);
 
 
 void luaLoadStandardLibrary(lua_State *L) {
@@ -32,9 +38,11 @@ void luaLoadStandardLibrary(lua_State *L) {
    luaPushFunctionGlobal(L, "toggleStats", &slua_toggleStats);
    luaPushFunctionGlobal(L, "openEditor", &slua_openEditor);
    luaPushFunctionGlobal(L, "setPalette", &slua_setPalette);
+   luaPushFunctionGlobal(L, "toggleLightMode", &slua_toggleLightMode);
 
    lua_newtable(L);
-   luaPushFunctionTable(L, "clearCache", &slua_clearCache);
+   luaPushFunctionTable(L, "clearImageCache", &slua_clearImageCache);
+   luaPushFunctionTable(L, "clearSpriteCache", &slua_clearSpriteCache);
    lua_setglobal(L, LLIB_IMG);
 }
 
@@ -57,6 +65,12 @@ int slua_openEditor(lua_State *L) {
    return 0;
 }
 
+int slua_toggleLightMode(lua_State *L) {
+   WorldView *view = luaGetWorldView(L);
+   gridManagerToggleLightMode(view->gridManager);
+   return 0;
+}
+
 
 int slua_rand(lua_State *L) {
    int lower = (int)luaL_checkinteger(L, 1);
@@ -68,15 +82,19 @@ int slua_rand(lua_State *L) {
 
 int slua_toggleStats(lua_State *L) {
    WorldView *view = luaGetWorldView(L);
-   renderManagerToggleFPS(view->managers->renderManager);
+   framerateViewerToggle(view->framerateViewer);
    return 0;
 }
 
-int slua_clearCache(lua_State *L) {
+int slua_clearImageCache(lua_State *L) {
    WorldView *view = luaGetWorldView(L);
-
    imageLibraryClear(view->imageLibrary);
+   return 0;
+}
 
+int slua_clearSpriteCache(lua_State *L) {
+   WorldView *view = luaGetWorldView(L);
+   spriteManagerClear(view->spriteManager);
    return 0;
 }
 
@@ -84,8 +102,6 @@ int slua_setPalette(lua_State *L) {
    WorldView *view = luaGetWorldView(L);
    StringView id = NULL;
    int result = 0;
-   byte *buffer;
-   int bSize;
 
    int inType = lua_type(L, -1);
 
@@ -100,16 +116,7 @@ int slua_setPalette(lua_State *L) {
       lua_error(L);
    }
 
-   result = DBSelectPalette(view->db, id, &buffer, &bSize);
-
-   if (bSize != sizeof(Palette)) {
-      lua_pushliteral(L, "Failed to load palette; Got blob but invalid size?");
-      lua_error(L);
-   }
-
-   appSetPalette(appGet(), (Palette*)buffer);
-
-
+   assetsSetPalette(view->db, id);
    return 0;
 
 }

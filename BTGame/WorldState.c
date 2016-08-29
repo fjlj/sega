@@ -1,6 +1,5 @@
 #include "WorldView.h"
 #include "Managers.h"
-#include "CoreComponents.h"
 #include "LightGrid.h"
 #include "Console.h"
 #include "GameState.h"
@@ -9,13 +8,14 @@
 #include "ChoicePrompt.h"
 #include "Weather.h"
 #include "TextArea.h"
-
-#include "Entities\Entities.h"
+#include "Calendar.h"
 
 #include "SEGA\Input.h"
 #include "SEGA\App.h"
 
 #include "segashared\CheckedMemory.h"
+
+#include "MenuPanel.h"
 
 
 #define STARTING_AMBIENT_LEVEL MAX_BRIGHTNESS
@@ -24,6 +24,9 @@ typedef struct {
    WorldView *view;
 
    TextArea *smallbox;
+
+   ManagedImage *bg;
+
 }WorldState;
 
 static void _worldStateCreate(WorldState *self) { 
@@ -31,6 +34,7 @@ static void _worldStateCreate(WorldState *self) {
 
 }
 static void _worldStateDestroy(WorldState *self){   
+
    checkedFree(self);
 }
 
@@ -56,58 +60,41 @@ void _worldOpenEditor(WorldState *state, GameStateOpenMapEditor *m) {
 }
 
 void _worldUpdate(WorldState *state, GameStateUpdate *m){
-   BTManagers *managers = state->view->managers;
+   WorldView *view = state->view;
    Mouse *mouse = appGetMouse(appGet());
    Int2 mousePos = mouseGetPosition(mouse);
 
-   cursorManagerUpdate(managers->cursorManager, mousePos.x, mousePos.y);
-   interpolationManagerUpdate(managers->interpolationManager);
-   waitManagerUpdate(managers->waitManager);
-   gridMovementManagerUpdate(managers->gridMovementManager);
-   pcManagerUpdate(managers->pcManager);
-   actorManagerUpdate(managers->actorManager);
+   cursorManagerUpdate(view->cursorManager, mousePos.x, mousePos.y);
+   actorManagerUpdate(view->actorManager);
+   pcManagerUpdate(view->pcManager);
+   textAreaUpdate(state->smallbox);
 
-   textAreaUpdate(state->smallbox, state->view);
+   calendarUpdate(view->calendar);
+   calendarSetAmbientByTime(view->calendar);
+   calendarSetPaletteByTime(view->calendar);
 }
 
-static void _drawTextAreas(WorldState *state, Frame *frame) {
-   textAreaRender(state->smallbox, state->view, frame);
-}
 
-static void _registerGridRenders(WorldState *state, WorldView *view) {
-   LayerRenderer grid, light, weather, textAreas;
 
-   closureInit(LayerRenderer)(&grid, view->managers->gridManager, &gridManagerRender, NULL);
-   closureInit(LayerRenderer)(&weather, view->weather, &weatherRender, NULL);
-   closureInit(LayerRenderer)(&light, view->managers->gridManager, &gridManagerRenderLighting, NULL);
-   closureInit(LayerRenderer)(&textAreas, state, &_drawTextAreas, NULL);
-
-   renderManagerAddLayerRenderer(view->managers->renderManager, LayerGrid, grid);
-   renderManagerAddLayerRenderer(view->managers->renderManager, LayerGridWeather, weather);
-   renderManagerAddLayerRenderer(view->managers->renderManager, LayerGridLighting, light);
-
-   renderManagerAddLayerRenderer(view->managers->renderManager, LayerConsole, textAreas);
-}
 
 void _worldEnter(WorldState *state, StateEnter *m) {
-   BTManagers *managers = state->view->managers;
+   WorldView *view = state->view;
    state->smallbox = textAreaManagerGet(state->view->textAreaManager, stringIntern("smallbox"));
+   state->bg = imageLibraryGetImage(state->view->imageLibrary, stringIntern(IMG_BG));
 
-   verbManagerSetEnabled(managers->verbManager, true);
-   changeBackground(state->view, IMG_BG);
 
-   _registerGridRenders(state, state->view);
+   verbManagerSetEnabled(view->verbManager, true);
+
 }
 void _worldExit(WorldState *state, StateExit *m) {
-   BTManagers *managers = state->view->managers;
+   WorldView *view = state->view;
 
-   verbManagerSetEnabled(managers->verbManager, false);
-
-   renderManagerRemoveLayerRenderer(state->view->managers->renderManager, LayerConsole);
+   managedImageDestroy(state->bg);
+   verbManagerSetEnabled(view->verbManager, false);
 }
 
 static void _handleKeyboard(WorldState *state) {
-   BTManagers *managers = state->view->managers;
+   WorldView *view = state->view;
    Keyboard *k = appGetKeyboard(appGet());
    KeyboardEvent e = { 0 };
    Viewport *vp = state->view->viewport;
@@ -116,26 +103,26 @@ static void _handleKeyboard(WorldState *state) {
    while (keyboardPopEvent(k, &e)) {
 
       //intercept keyboard input for choicePrompt
-      if (choicePromptHandleKeyEvent(state->view->choicePrompt, &e)) {
+      if (choicePromptHandleKeyEvent(view->choicePrompt, &e)) {
          continue;
       }
 
       if (e.action == SegaKey_Pressed) {
          switch (e.key) {
          case SegaKey_LeftControl:
-            pcManagerSetSneak(state->view->managers->pcManager, true);
+            pcManagerSetSneak(view->pcManager, true);
             break;
          case SegaKey_1:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Look, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Look, e.action);
             break;
          case SegaKey_2:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Use, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Use, e.action);
             break;
          case SegaKey_3:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Talk, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Talk, e.action);
             break;
          case SegaKey_4:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Fight, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Fight, e.action);
             break;
          }
       }
@@ -145,52 +132,52 @@ static void _handleKeyboard(WorldState *state) {
             fsmPush(state->view->gameState, gameStateCreateConsole(state->view));
             break;
          case SegaKey_LeftControl:
-            pcManagerSetSneak(state->view->managers->pcManager, false);
+            pcManagerSetSneak(view->pcManager, false);
             break;
          case SegaKey_Escape:
             appQuit(appGet());
             break;
          case SegaKey_T:
-            pcManagerToggleTorch(state->view->managers->pcManager);
+            pcManagerToggleTorch(view->pcManager);
             break;
          case SegaKey_W:
          case SegaKey_A:
          case SegaKey_S:
          case SegaKey_D:
-            pcManagerStop(state->view->managers->pcManager);
+            pcManagerStop(view->pcManager);
             break;
          case SegaKey_1:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Look, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Look, e.action);
             break;
          case SegaKey_2:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Use, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Use, e.action);
             break;
          case SegaKey_3:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Talk, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Talk, e.action);
             break;
          case SegaKey_4:
-            verbManagerKeyButton(state->view->managers->verbManager, Verb_Fight, e.action);
+            verbManagerKeyButton(view->verbManager, Verb_Fight, e.action);
             break;
          }
       }
    }
 
    if (keyboardIsDown(k, SegaKey_W)) {
-      pcManagerMoveRelative(state->view->managers->pcManager, 0, -1);
+      pcManagerMoveRelative(view->pcManager, 0, -1);
    }
    if (keyboardIsDown(k, SegaKey_S)) {
-      pcManagerMoveRelative(state->view->managers->pcManager, 0, 1);
+      pcManagerMoveRelative(view->pcManager, 0, 1);
    }
    if (keyboardIsDown(k, SegaKey_A)) {
-      pcManagerMoveRelative(state->view->managers->pcManager, -1, 0);
+      pcManagerMoveRelative(view->pcManager, -1, 0);
    }
    if (keyboardIsDown(k, SegaKey_D)) {
-      pcManagerMoveRelative(state->view->managers->pcManager, 1, 0);
+      pcManagerMoveRelative(view->pcManager, 1, 0);
    }
 }
 
 static void _handleMouse(WorldState *state) {
-   BTManagers *managers = state->view->managers;
+   WorldView *view = state->view;
    Mouse *mouse = appGetMouse(appGet());
    Keyboard *k = appGetKeyboard(appGet());
    MouseEvent event = { 0 };
@@ -209,7 +196,7 @@ static void _handleMouse(WorldState *state) {
       else if (event.action == SegaMouse_Pressed) {
          switch (event.button) {
          case SegaMouseBtn_Left:
-            if (verbManagerMouseButton(state->view->managers->verbManager, &event)) {
+            if (verbManagerMouseButton(view->verbManager, &event)) {
                continue;
             }
             break;
@@ -219,9 +206,14 @@ static void _handleMouse(WorldState *state) {
          switch (event.button) {
          case SegaMouseBtn_Left:
 
-            if (verbManagerMouseButton(state->view->managers->verbManager, &event)) {
+            if (verbManagerMouseButton(view->verbManager, &event)) {
                continue;
             }
+
+            if (calendarMouseButton(view->calendar, &event)) {
+               continue;
+            }
+
             break;
          case SegaMouseBtn_Right:
 
@@ -233,7 +225,7 @@ static void _handleMouse(WorldState *state) {
 
    if (mouseIsDown(mouse, SegaMouseBtn_Right)) {
       if (rectiContains(vpArea, pos)) {
-         pcManagerMove(state->view->managers->pcManager,
+         pcManagerMove(view->pcManager,
             (pos.x - vp->region.origin_x + vp->worldPos.x) / GRID_CELL_SIZE,
             (pos.y - vp->region.origin_y + vp->worldPos.y) / GRID_CELL_SIZE);
       }
@@ -246,7 +238,30 @@ void _worldHandleInput(WorldState *state, GameStateHandleInput *m){
 }
 
 void _worldRender(WorldState *state, GameStateRender *m){
-   renderManagerRender(state->view->managers->renderManager, m->frame);
+   Frame *frame = m->frame;
+   frameClear(frame, FrameRegionFULL, 0);
+   
+   frameRenderImage(m->frame, FrameRegionFULL, 0, 0, managedImageGetImage(state->bg));
+
+   gridManagerRender(state->view->gridManager, frame);
+
+   actorManagerRender(state->view->actorManager, frame);
+
+   weatherRender(state->view->weather, frame);
+   gridManagerRenderLighting(state->view->gridManager, frame);
+
+
+   verbManagerRender(state->view->verbManager, frame);
+
+   calendarRenderClock(state->view->calendar, m->frame);
+
+   choicePromptRender(state->view->choicePrompt, frame);
+   textAreaRender(state->smallbox, state->view, frame);
+   cursorManagerRender(state->view->cursorManager, frame);
+
+   calendarRenderTestReadout(state->view->calendar, frame);
+   framerateViewerRender(state->view->framerateViewer, frame);
+   consoleRenderNotification(state->view->console, frame);
 }
 
 StateClosure gameStateCreateWorld(WorldView *view){

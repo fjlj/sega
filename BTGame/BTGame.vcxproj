@@ -39,7 +39,14 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <CustomBuildBeforeTargets>
+    </CustomBuildBeforeTargets>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <CustomBuildBeforeTargets>
+    </CustomBuildBeforeTargets>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -52,6 +59,21 @@
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PreBuildEvent>
+      <Command>$(OutDir)DBGen.exe assets.dbh</Command>
+    </PreBuildEvent>
+    <CustomBuildStep>
+      <Command>
+      </Command>
+    </CustomBuildStep>
+    <CustomBuildStep>
+      <TreatOutputAsContent>
+      </TreatOutputAsContent>
+      <Outputs>
+      </Outputs>
+      <Inputs>
+      </Inputs>
+    </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -69,11 +91,23 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
+    <PreBuildEvent>
+      <Command>$(OutDir)DBGen.exe assets.dbh</Command>
+    </PreBuildEvent>
+    <CustomBuildStep>
+      <Command>
+      </Command>
+    </CustomBuildStep>
+    <CustomBuildStep>
+      <TreatOutputAsContent>
+      </TreatOutputAsContent>
+      <Outputs>
+      </Outputs>
+      <Inputs>
+      </Inputs>
+    </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Entities\Entities.vcxproj">
-      <Project>{c01298c5-f64b-4e7d-ad46-f6bcdf59c4a9}</Project>
-    </ProjectReference>
     <ProjectReference Include="..\liblua\liblua.vcxproj">
       <Project>{221073a0-4ab3-4c7d-9b10-5f09732836a2}</Project>
     </ProjectReference>
@@ -94,10 +128,13 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Actors.h" />
+    <ClInclude Include="AssetHelpers.h" />
+    <ClInclude Include="assets.h" />
     <ClInclude Include="BT.h" />
+    <ClInclude Include="Calendar.h" />
     <ClInclude Include="ChoicePrompt.h" />
     <ClInclude Include="Console.h" />
-    <ClInclude Include="CoreComponents.h" />
     <ClInclude Include="DB.h" />
     <ClInclude Include="GameClock.h" />
     <ClInclude Include="GameHelpers.h" />
@@ -105,14 +142,19 @@
     <ClInclude Include="GridManager.h" />
     <ClInclude Include="GridSolver.h" />
     <ClInclude Include="ImageLibrary.h" />
+    <ClInclude Include="LightDebugger.h" />
     <ClInclude Include="LightGrid.h" />
     <ClInclude Include="Lua.h" />
     <ClInclude Include="Managers.h" />
     <ClInclude Include="Map.h" />
     <ClInclude Include="MapEditor.h" />
+    <ClInclude Include="MenuPanel.h" />
     <ClInclude Include="MeshRendering.h" />
+    <ClInclude Include="RenderHelpers.h" />
     <ClInclude Include="RenderLayers.h" />
     <ClInclude Include="RichText.h" />
+    <ClInclude Include="assets.dbh" />
+    <ClInclude Include="Sprites.h" />
     <ClInclude Include="TextArea.h" />
     <ClInclude Include="Tiles.h" />
     <ClInclude Include="Verbs.h" />
@@ -122,16 +164,19 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ActorManager.c" />
+    <ClCompile Include="AssetHelpers.c" />
+    <ClCompile Include="assets.c" />
+    <ClCompile Include="Calendar.c" />
     <ClCompile Include="ChoicePrompt.c" />
     <ClCompile Include="Console.c" />
     <ClCompile Include="ConsoleState.c" />
     <ClCompile Include="DB.c" />
     <ClCompile Include="EditorState.c" />
+    <ClCompile Include="FramerateViewer.c" />
     <ClCompile Include="GameHelpers.c" />
     <ClCompile Include="GridManager.c" />
-    <ClCompile Include="GridMovementManager.c" />
     <ClCompile Include="GridSolver.c" />
-    <ClCompile Include="InterpolationManager.c" />
+    <ClCompile Include="LightDebugger.c" />
     <ClCompile Include="LightGrid.c" />
     <ClCompile Include="Lua.c" />
     <ClCompile Include="Lua_ActorLibrary.c" />
@@ -139,25 +184,26 @@
     <ClCompile Include="Lua_DB.c" />
     <ClCompile Include="Lua_Map.c" />
     <ClCompile Include="Lua_StandardLibrary.c" />
+    <ClCompile Include="Lua_Time.c" />
     <ClCompile Include="Lua_UILibrary.c" />
     <ClCompile Include="Map.c" />
     <ClCompile Include="MapEditor.c" />
+    <ClCompile Include="MenuPanel.c" />
     <ClCompile Include="PCManager.c" />
+    <ClCompile Include="RenderHelpers.c" />
     <ClCompile Include="RichText.c" />
     <ClCompile Include="SplashState.c" />
+    <ClCompile Include="Sprites.c" />
     <ClCompile Include="TextArea.c" />
     <ClCompile Include="VerbManager.c" />
-    <ClCompile Include="WaitManager.c" />
     <ClCompile Include="Weather.c" />
     <ClCompile Include="WorldState.c" />
     <ClCompile Include="BT.c" />
-    <ClCompile Include="CoreComponents.c" />
     <ClCompile Include="CursorManager.c" />
     <ClCompile Include="GameClock.c" />
     <ClCompile Include="GameState.c" />
     <ClCompile Include="ImageLibrary.c" />
     <ClCompile Include="MeshRendering.c" />
-    <ClCompile Include="RenderManager.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -15,7 +15,7 @@ typedef struct {
    byte fg, bg;
 }SpanStyle;
 
-typedef struct {
+typedef struct Span_t{
    SpanStyle style;
    String *string;
 } Span;
@@ -36,6 +36,20 @@ void richTextLineCopy(RichTextLine self, RichTextLine other);
 void richTextLineGetRaw(RichTextLine self, String *out);
 
 typedef struct RichText_t RichText;
+
+//---------------------------
+//this is kind of an old way of doing richtext that im keeping 
+//for consoles and choiceprompts who were already using it
+//you should use textareas going forward
+typedef struct {
+   byte x, y;
+   RichTextLine line;
+}TextLine;
+void textLineDestroy(TextLine *self);
+#define VectorTPart TextLine
+#include "segautils/Vector_Decl.h"
+//-------------------------
+
 
 // This takes ownership of the string!
 RichText *richTextCreate(String *string);

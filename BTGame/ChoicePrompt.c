@@ -2,7 +2,7 @@
 #include "Entities/Entities.h"
 #include "segashared/CheckedMemory.h"
 #include "RichText.h"
-#include "CoreComponents.h"
+#include "RenderHelpers.h"
 
 #include <stdio.h>
 
@@ -11,28 +11,16 @@ struct ChoicePrompt_t {
    WorldView *view;
    bool enabled;
 
-   Entity *linesEntity;
    RichText *rt;
    vec(RichTextLine) *rtLines;
    vec(StringPtr) *choices;
+   vec(TextLine) *lines;
 
    String *selection;
    int selectedIndex;
+
+
 };
-
-static void _createLinesEntity(ChoicePrompt *self) {
-   Entity *e = entityCreate(self->view->entitySystem);
-   TextComponent tc = { .lines = vecCreate(TextLine)(&textLineDestroy) };
-
-   COMPONENT_ADD(e, LayerComponent, LayerUI);
-   COMPONENT_ADD(e, RenderedUIComponent, 0);
-   COMPONENT_ADD(e, VisibilityComponent, .shown = self->enabled);
-   entityAdd(TextComponent)(e, &tc);
-   entityUpdate(e);
-
-   self->linesEntity = e;
-}
-
 
 ChoicePrompt *createChoicePrompt(WorldView *view) {
    ChoicePrompt *out = checkedCalloc(1, sizeof(ChoicePrompt));
@@ -45,7 +33,7 @@ ChoicePrompt *createChoicePrompt(WorldView *view) {
    out->selection = NULL;
    out->selectedIndex = -1;
 
-   _createLinesEntity(out);
+   out->lines = vecCreate(TextLine)(&textLineDestroy);
 
    return out;
 }
@@ -53,6 +41,7 @@ ChoicePrompt *createChoicePrompt(WorldView *view) {
 void choicePromptDestroy(ChoicePrompt *self) {
    richTextDestroy(self->rt);
    vecDestroy(RichTextLine)(self->rtLines);
+   vecDestroy(TextLine)(self->lines);
 
    if (self->choices) {
       vecDestroy(StringPtr)(self->choices);
@@ -62,15 +51,11 @@ void choicePromptDestroy(ChoicePrompt *self) {
 }
 
 static void _renderChoicesToLines(ChoicePrompt *self) {
-   VisibilityComponent *vc = entityGet(VisibilityComponent)(self->linesEntity);
-   TextComponent *tc = entityGet(TextComponent)(self->linesEntity);
    String *renderedChoices = stringCreate("");
    int i = 0;
    int choiceCount = vecSize(StringPtr)(self->choices);
    int rtLineCount = 0;
    static char buff[128];
-
-   vc->shown = true;   
 
    //iterate over our choices into a formatted single string which we'll feed to
    //richtext
@@ -90,33 +75,43 @@ static void _renderChoicesToLines(ChoicePrompt *self) {
 
    rtLineCount = vecSize(RichTextLine)(self->rtLines);
 
-   //clear the old entity list
-   vecClear(TextLine)(tc->lines);
+   //clear the old line list
+   vecClear(TextLine)(self->lines);
 
-   //now we need to push each rtline into the entity
+   //now we need to push each rtline into the linelist
    for (i = 0; i < rtLineCount; ++i) {
       TextLine *line = NULL;
-      vecPushBack(TextLine)(tc->lines, &(TextLine){
+      vecPushBack(TextLine)(self->lines, &(TextLine){
          .x = 0, .y = i,
          .line = vecCreate(Span)(&spanDestroy)
       });
 
-      //copy from our rt list to the entity
-      richTextLineCopy(*vecAt(RichTextLine)(self->rtLines, i), vecAt(TextLine)(tc->lines, i)->line);
+      //copy from our rt list to the line list
+      richTextLineCopy(*vecAt(RichTextLine)(self->rtLines, i), vecAt(TextLine)(self->lines, i)->line);
    }
 
 }
 
 static void _setSelected(ChoicePrompt *self) {
-   VisibilityComponent *vc = entityGet(VisibilityComponent)(self->linesEntity);
-   vc->shown = false;
-
    self->selection = *vecAt(StringPtr)(self->choices, self->selectedIndex);
    self->enabled = false;
-
 }
 
 void choicePromptUpdate(ChoicePrompt *self) {
+}
+
+void choicePromptRender(ChoicePrompt *self, Frame *frame) {
+   if (self->enabled) {
+      Font *defaultFont = fontFactoryGetFont(self->view->fontFactory, 0, 15);
+
+      vecForEach(TextLine, line, self->lines, {
+         byte x = line->x;
+         byte y = line->y;
+         vecForEach(Span, span, line->line,{
+            frameRenderSpan(self->view, frame, &x, &y, span);
+         });
+      });
+   }
 }
 
 //assumes ownership of the vector

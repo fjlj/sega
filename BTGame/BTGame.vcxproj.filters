@@ -22,6 +22,15 @@
     <Filter Include="Source Files\Lua">
       <UniqueIdentifier>{6c69116a-9990-4962-91e0-90347a70d4f4}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\DBGen">
+      <UniqueIdentifier>{f93ab4af-53d0-4bd6-894f-51f24cefaf74}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Generated">
+      <UniqueIdentifier>{071300d4-adaa-487f-95a6-16a8a94794cd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Generated">
+      <UniqueIdentifier>{24f9c756-b789-4e19-886c-4b43bb47d87f}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BT.h">
@@ -31,9 +40,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ImageLibrary.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="CoreComponents.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GameClock.h">
@@ -99,12 +105,36 @@
     <ClInclude Include="TextArea.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="assets.dbh">
+      <Filter>Header Files\DBGen</Filter>
+    </ClInclude>
+    <ClInclude Include="assets.h">
+      <Filter>Header Files\Generated</Filter>
+    </ClInclude>
+    <ClInclude Include="AssetHelpers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Actors.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Sprites.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderHelpers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Calendar.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="LightDebugger.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MenuPanel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BT.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="CoreComponents.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="GameClock.c">
@@ -122,9 +152,6 @@
     <ClCompile Include="CursorManager.c">
       <Filter>Source Files\Managers</Filter>
     </ClCompile>
-    <ClCompile Include="RenderManager.c">
-      <Filter>Source Files\Managers</Filter>
-    </ClCompile>
     <ClCompile Include="WorldState.c">
       <Filter>Source Files\Game States</Filter>
     </ClCompile>
@@ -133,12 +160,6 @@
     </ClCompile>
     <ClCompile Include="LightGrid.c">
       <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="InterpolationManager.c">
-      <Filter>Source Files\Managers</Filter>
-    </ClCompile>
-    <ClCompile Include="GridMovementManager.c">
-      <Filter>Source Files\Managers</Filter>
     </ClCompile>
     <ClCompile Include="PCManager.c">
       <Filter>Source Files\Managers</Filter>
@@ -154,9 +175,6 @@
     </ClCompile>
     <ClCompile Include="RichText.c">
       <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="WaitManager.c">
-      <Filter>Source Files\Managers</Filter>
     </ClCompile>
     <ClCompile Include="Lua.c">
       <Filter>Source Files\Lua</Filter>
@@ -210,6 +228,33 @@
       <Filter>Source Files\Game States</Filter>
     </ClCompile>
     <ClCompile Include="TextArea.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="assets.c">
+      <Filter>Source Files\Generated</Filter>
+    </ClCompile>
+    <ClCompile Include="AssetHelpers.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderHelpers.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="FramerateViewer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Sprites.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Calendar.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="LightDebugger.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Lua_Time.c">
+      <Filter>Source Files\Lua</Filter>
+    </ClCompile>
+    <ClCompile Include="MenuPanel.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

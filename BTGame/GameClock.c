@@ -8,12 +8,9 @@ struct GameClock_t {
    bool paused;
 };
 
-GameClock *gameClockCreate() {
-   GameClock *out = checkedCalloc(1, sizeof(GameClock));
-   return out;
-}
-void gameClockDestroy(GameClock *self) {
-   checkedFree(self);
+static GameClock g_clock = { 0 };
+GameClock *gameClockGet() {
+   return &g_clock;
 }
 
 static void _updateTime(GameClock *self) {
@@ -24,7 +21,8 @@ static void _updateTime(GameClock *self) {
    self->appTime = newTime;
 }
 
-Microseconds gameClockGetTime(GameClock *self) {
+Microseconds gameClockGetTime() {
+   GameClock *self = gameClockGet();
    if (!self->paused) {
       _updateTime(self);
    }
