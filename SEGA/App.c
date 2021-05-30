@@ -15,6 +15,8 @@
 #include "IDeviceContext.h"
 #include "Input.h"
 
+#include "segautils/FrameProfiler.h"
+
 App *g_App;
 
 App *appGet(){
@@ -77,9 +79,9 @@ static void _renderUpdateFrameTime(Frame *frame, Microseconds frameLength) {
          color = 2;
       }
 
-      frameRenderLine(frame, FrameRegionFULL,
-         i, EGA_RES_HEIGHT - 16 - MAX(0, frameTimes[i] - 10),
-         i, EGA_RES_HEIGHT - 16, color);
+      //frameRenderLine(frame, FrameRegionFULL,
+      //   i, EGA_RES_HEIGHT - 16 - MAX(0, frameTimes[i] - 10),
+      //   i, EGA_RES_HEIGHT - 16, color);
    }
 
 
@@ -105,40 +107,62 @@ static void _updateFPS(Microseconds delta, double *fps){
 
 }
 
-static void _singleUpdate(App *self, Microseconds frameLength) {
+static void _appUpdateWindowSize(App *self) {
+   self->winSize = iDeviceContextWindowSize(self->context);
+   self->viewport = _buildProportionalViewport(self->winSize.x, self->winSize.y, &self->vpScale);
+}
+
+static void _singleUpdate(App *self) {
+
+   iDeviceContextPostRender(self->context);
+
+   if (iDeviceContextShouldClose(self->context)) {
+      self->running = false;
+   }
 
    virtualAppOnStep(self->subclass);
    iDeviceContextPreRender(self->context);
    //_renderUpdateFrameTime(self->subclass->currentFrame, frameLength);
+
+   _appUpdateWindowSize(self);
+
    iRendererRenderFrame(self->renderer,
       self->subclass->currentFrame,
       self->subclass->currentPalette.colors,
       &self->viewport);
-   iDeviceContextPostRender(self->context);
+   
+}
 
-   if (iDeviceContextShouldClose(self->context))
-      self->running = false;
+FILE *fpsOut;
+
+static void freeUpCPU(Microseconds timeOffset) {
+   if (timeOffset > 1500) {
+      Sleep((DWORD)((timeOffset - 500) / 1000));
+   }
+   else if (timeOffset > 500) {
+      SwitchToThread();
+   }
 }
 
 static void _step(App *self) {
    //dt
    Microseconds usPerFrame = appGetFrameTime(self);
-   Microseconds time = appGetTime(self);
-   Microseconds deltaTime = time - self->lastUpdated;   
 
-   //update
-   if(deltaTime >= usPerFrame)
-   {      
-      self->lastUpdated = time;      
-      _updateFPS(deltaTime, &virtualAppGetData(self->subclass)->fps);
-      _singleUpdate(self, deltaTime);
-      
+   Microseconds time = appGetTime(self);
+   Microseconds deltaTime = time - self->lastUpdated;
+
+   frameProfilerReset();
+
+   if (deltaTime >= usPerFrame) {
+      self->lastUpdated = time;
+      _singleUpdate(self);
    }
-   else if(usPerFrame - deltaTime > 3000){
-      //only yield if we're more than 3ms out
-      appSleep(0);
+   else {
+      freeUpCPU(usPerFrame - deltaTime);
    }
 }
+
+
 
 App *_createApp(VirtualApp *subclass, IDeviceContext *context, IRenderer *renderer){
    AppData *data = virtualAppGetData(subclass);
@@ -146,12 +170,12 @@ App *_createApp(VirtualApp *subclass, IDeviceContext *context, IRenderer *render
    out->winSize = iDeviceContextWindowSize(context);
    out->subclass = subclass;
 
-   out->lastUpdated = 0;
-   out->desiredFrameRate = data->desiredFrameRate;
-
    out->renderer = renderer;
    out->context = context;
 
+   out->lastUpdated = appGetTime(out);
+   out->desiredFrameRate = data->desiredFrameRate;
+   
    out->viewport = _buildProportionalViewport(out->winSize.x, out->winSize.y, &out->vpScale);
 
    out->running = true;
@@ -160,8 +184,6 @@ App *_createApp(VirtualApp *subclass, IDeviceContext *context, IRenderer *render
    subclass->currentFrame = frameCreate();
    iRendererInit(renderer);
    virtualAppOnStart(subclass);
-
-   
 
    return out;
 }
@@ -174,13 +196,12 @@ void _destroyApp(App *self){
    checkedFree(self);
 }
 
-void runApp(VirtualApp *subclass, IRenderer *renderer, IDeviceContext *context) {
+void appStart(VirtualApp *subclass, IRenderer *renderer, IDeviceContext *context) {
    AppData *data = virtualAppGetData(subclass);
    Int2 winSize = data->defaultWindowSize;
-   App *app;
    int result = iDeviceContextInit(context, winSize.x, winSize.y, data->windowTitle, data->dcFlags);
 
-   if (result){
+   if (result) {
       return;
    }
 
@@ -189,13 +210,30 @@ void runApp(VirtualApp *subclass, IRenderer *renderer, IDeviceContext *context) 
    //update winSize
    winSize = iDeviceContextWindowSize(context);
 
-   app = _createApp(subclass, context, renderer);
+   _createApp(subclass, context, renderer);
+}
+int appRunning() {
+   return g_App->running;
+}
+void appStep() {
+   _step(g_App);
+}
+void appDestroy() {
+   _destroyApp(g_App);
+}
 
-   while (app->running) {
-      _step(app);
+void runApp(VirtualApp *subclass, IRenderer *renderer, IDeviceContext *context) {
+   appStart(subclass, renderer, context);
+
+
+   fpsOut = fopen("FRAMETIME_REPORT.log", "w");
+
+   while (appRunning()) {
+      appStep();
    }
 
-   _destroyApp(app);   
+   appDestroy();
+   fclose(fpsOut);
    
    return;
 }
@@ -225,7 +263,9 @@ Mouse *appGetMouse(App *self){
    return iDeviceContextMouse(self->context);
 }
 
-Microseconds appGetTime(App *self){return iDeviceContextTime(self->context);}
+Microseconds appGetTime(App *self){ return iDeviceContextTime(self->context); }
+Milliseconds appGetTimeMS(App *self) { return iDeviceContextTimeMS(self->context); }
+
 Microseconds appGetFrameTime(App *self){ 
    static Microseconds out;
    static bool outSet = false;
@@ -285,8 +325,14 @@ int appListFiles(const char *root, int type, vec(StringPtr) **out, const char *e
    StringCchCat(szDir, MAX_PATH, TEXT("\\*"));
 
    // Find the first file in the directory.
-
+#ifdef SEGA_UWP
+   //TODO: make this work with UWP
+   hFind = INVALID_HANDLE_VALUE;
+#else
    hFind = FindFirstFile(szDir, &ffd);
+#endif
+
+   
 
    if (INVALID_HANDLE_VALUE == hFind)   {
       //DisplayErrorBox(TEXT("FindFirstFile"));

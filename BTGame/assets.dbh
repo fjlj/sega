@@ -34,3 +34,13 @@ struct TileSchema{
    int fadeWidth;
    bool occlusion;
 };
+
+struct LuaScript{
+   SELECT PRIMARY_KEY UNIQUE REPLACE_ON_CONFLICT String module;
+   String script;
+};
+
+struct Map{
+   SELECT PRIMARY_KEY UNIQUE REPLACE_ON_CONFLICT String id;
+   Blob map;
+};

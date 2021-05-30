@@ -57,6 +57,8 @@ typedef struct {
 
    vec(ActorPtr) *testActors;
 
+   Texture *frameBuffer;
+
 } BTGame;
 
 #pragma region App_Things
@@ -89,7 +91,8 @@ AppData createData() {
       data.dcFlags |= DC_FLAG_FULLSCREEN;
    }
 
-   data.windowTitle = stringIntern("Chronicles IV: Ebonheim");
+   //data.windowTitle = stringIntern("Chronicles IV: Ebonheim");
+   data.windowTitle = stringIntern("BOMBILLAS.BAS");
 
    return data;
 }
@@ -108,12 +111,14 @@ VirtualApp *btCreate() {
    r->data = createData();
    
    r->viewport = (Viewport){   
-      .region = { GRID_POS_X, GRID_POS_Y, GRID_PX_WIDTH, GRID_PX_HEIGHT },
+      .region = { GRID_POS_X, GRID_POS_Y, GRID_SIZE_X, GRID_SIZE_Y},
       .worldPos = { 0, 0 } 
    };
    r->view.viewport = &r->viewport;
 
    r->view.gameClock = gameClockGet();
+
+   r->frameBuffer = textureCreate(EGA_RES_WIDTH, EGA_RES_HEIGHT);
 
    CREATE_AND_VIEW(imageLibrary, imageLibraryCreate(&r->view));
    CREATE_AND_VIEW(spriteManager, spriteManagerCreate(&r->view));
@@ -171,6 +176,8 @@ void _destroy(BTGame *self){
 
    spriteManagerDestroy(self->spriteManager);
    imageLibraryDestroy(self->imageLibrary);
+
+   textureDestroy(self->frameBuffer);
    
    luaDestroy(self->L);
    checkedFree(self);
@@ -222,10 +229,9 @@ void _onStart(BTGame *self){
    self->view.L = self->L;
 
    //we need the console alive to print errors!
-   consoleCreateLines(self->console);   
+   consoleCreateLines(self->console);  
 
    luaLoadAllLibraries(self->L, &self->view);
-   luaLoadAssets(self->L);
 
    //gonna do our initial db connection here
    if (dbConnect((DBBase*)self->db, "chronicles.db", false) != DB_SUCCESS){
@@ -241,9 +247,12 @@ void _onStart(BTGame *self){
 #endif
    }
 
+   luaLoadAssets(self->L);
+   
+
    //sesneless default palette woohoo
    {
-      Palette defPal = { {0, 1, 2, 3, 4, 58, 20, 7, 56, 57, 60, 62, 63, 60, 62, 63} };
+      Palette defPal = { {0, 1, 2, 3, 4, 58, 20, 7, 56, 57, 60, 62, 63, 60, 62, 63} };//the default CGA palette
       appSetPalette(appGet(), &defPal);
    }
 
@@ -264,10 +273,48 @@ void _onStart(BTGame *self){
 }
 
 
+
+#include "MeshRendering.h"
+#include "segautils/Math.h"
+#include <math.h>
+
 void _onStep(BTGame *self){
    fsmSend(self->gameState, GameStateHandleInput);
    fsmSend(self->gameState, GameStateUpdate);
-   fsmSendData(self->gameState, GameStateRender, self->vApp.currentFrame);
+   fsmSendData(self->gameState, GameStateRender, self->frameBuffer);
+   
+   frameRenderTexture(self->vApp.currentFrame, FrameRegionFULL, 0, 0, self->frameBuffer);
+   //{
+   //   static float angle = 0.0f;
+   //   float swaving = sinf(angle)/4;
+   //   vec(Vertex) *vbo = vecCreate(Vertex)(NULL);
+   //   vec(size_t) *ibo = vecCreate(size_t)(NULL);
+   //   Texture *tex;
+   //   Transform t = {
+   //      .size = (Int3) { EGA_RES_WIDTH, EGA_RES_HEIGHT, 1 },
+   //      .offset = (Int3) { EGA_RES_WIDTH/2, EGA_RES_HEIGHT /2, 0 },
+   //      .rotation = quaternionFromAxisAngle((Float3){0.5f + swaving, 0.0f + swaving, 1.0f - swaving}, angle += 0.05f)
+   //   };
+   //   Texture *frame = textureCreate(EGA_RES_WIDTH, EGA_RES_HEIGHT);
+
+
+   //   vecPushStackArray(Vertex, vbo, {
+   //      { .coords = { -0.5f, -0.5f, 0.0f },.texCoords = { 0, 0 } },
+   //      { .coords = { 0.5f, -0.5f, 0.0f },.texCoords = { EGA_RES_WIDTH, 0 } },
+   //      { .coords = { -0.5f, 0.5f, 0.0f },.texCoords = { 0, EGA_RES_HEIGHT } },
+   //      { .coords = { 0.5f, 0.5f, 0.0f },.texCoords = { EGA_RES_WIDTH, EGA_RES_HEIGHT } },
+   //   });
+
+   //   vecPushStackArray(size_t, ibo, { 0, 2, 1, 2, 3, 1});
+
+   //   renderMesh(vbo, ibo, self->frameBuffer, t, frame);
+   //   frameClear(self->vApp.currentFrame, FrameRegionFULL, 0);
+   //   frameRenderTexture(self->vApp.currentFrame, FrameRegionFULL, 0, 0, frame);
+
+   //   textureDestroy(frame);
+   //   vecDestroy(Vertex)(vbo);
+   //   vecDestroy(size_t)(ibo);
+   //}
 }
 
 

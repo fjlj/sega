@@ -14,18 +14,65 @@
 #include "LightDebugger.h"
 #include "Calendar.h"
 
+#include "MeshRendering.h"
+#include "segautils/Math.h"
+#include <math.h>
+
 #include "segashared\CheckedMemory.h"
 
 #include "segautils/StandardVectors.h"
 
 #define VP_SPEED 3
 #define VP_FAST_SPEED 8
+#define SCALE_INC 0.1f
+#define SCALE_TIME_US 500000
 
 typedef enum {
    None = 0,
    Paint,
    Square
 }PaintStates;
+
+typedef struct {
+   Viewport gridRenderingVP;
+   vec(Vertex) *vbo;
+   vec(size_t) *ibo;
+   FrameRegion gridRegion;
+   Texture *fbo;
+}MeshRenderData;
+
+MeshRenderData *meshRenderDataCreate() {
+   MeshRenderData *out = checkedCalloc(1, sizeof(MeshRenderData));
+   out->vbo = vecCreate(Vertex)(NULL);
+   out->ibo = vecCreate(size_t)(NULL);
+
+   vecPushStackArray(Vertex, out->vbo, {
+      { .coords = { 0.0f, 0.0f, 0.0f },.texCoords = { 0, 0 } },
+      { .coords = { 1.0f, 0.0f, 0.0f },.texCoords = { 1.0, 0 } },
+      { .coords = { 0.0f, 1.0f, 0.0f },.texCoords = { 0, 1.0 } },
+      { .coords = { 1.0f, 1.0f, 0.0f },.texCoords = { 1.0, 1.0 } },
+   });
+
+   vecPushStackArray(size_t, out->ibo, { 0, 2, 1, 2, 3, 1 });
+
+   out->gridRegion = (FrameRegion) {
+      .origin_x = GRID_POS_X,
+         .origin_y = GRID_POS_Y,
+         .width = GRID_SIZE_X,
+         .height = GRID_SIZE_Y
+   };
+
+   out->fbo = textureCreate(out->gridRegion.width, out->gridRegion.height);
+
+   return out;
+}
+
+void meshRenderDataDestroy(MeshRenderData *self) {
+   textureDestroy(self->fbo);
+   vecDestroy(Vertex)(self->vbo);
+   vecDestroy(size_t)(self->ibo);
+   checkedFree(self);
+}
 
 typedef struct {
    WorldView *view;
@@ -38,13 +85,59 @@ typedef struct {
 
    PaintStates state;
    Int2 squareStart, squareEnd;
+
+   MeshRenderData *gridMesh;
+
+   float targetStartScale, scale, targetScale;
+   float minScale, maxScale;
+   Microseconds scaleStartTime;
+
 }EditorState;
+
+static void _setScaleRanges(EditorState *state) {
+   state->minScale = 0.1f;
+   state->maxScale = 1000000.0f;
+}
+
+static void _increaseScale(EditorState *state) {
+   state->targetStartScale = state->scale;
+   state->targetScale = MIN(state->maxScale, state->targetScale + SCALE_INC * state->scale );
+   state->scaleStartTime = appGetTime(appGet());
+}
+static void _decreaseScale(EditorState *state) {
+   state->targetStartScale = state->scale;
+   state->targetScale = MAX(state->minScale, state->targetScale - SCALE_INC * state->scale);
+   state->scaleStartTime = appGetTime(appGet());
+}
+static void _resetScale(EditorState *state) {
+   state->targetStartScale = state->scale;
+   state->targetScale = 1.0f;
+   state->scaleStartTime = appGetTime(appGet());
+}
+static bool _scaleIsReset(EditorState *state) {
+   return fabs(state->scale - 1.0f) < 0.001f && fabs(state->targetScale - 1.0f) < 0.001f;
+}
+
+static void _updateScale(EditorState *state) {   
+   Microseconds deltaTime = appGetTime(appGet()) - state->scaleStartTime;
+
+   if (deltaTime < SCALE_TIME_US) {
+      float deltaScale = state->targetScale - state->targetStartScale;
+      state->scale = state->targetStartScale + (deltaTime / (float)SCALE_TIME_US) * deltaScale;
+   }
+   else {
+      state->scale = state->targetScale;
+   }
+}
 
 static void _editorStateCreate(EditorState *state) {
    state->editor = mapEditorCreate(state->view);
+   state->targetStartScale = state->scale = state->targetScale = 1.0f;
+   state->gridMesh = meshRenderDataCreate();
 }
 static void _editorStateDestroy(EditorState *self) {
    mapEditorDestroy(self->editor);
+   meshRenderDataDestroy(self->gridMesh);
    checkedFree(self);
 }
 
@@ -67,6 +160,9 @@ void _editorEnter(EditorState *state, StateEnter *m) {
    state->bg = imageLibraryGetImage(state->view->imageLibrary, stringIntern(IMG_BG_EDITOR));
    mapEditorReset(state->editor);
    calendarPause(state->view->calendar);
+   pcManagerUpdate(state->view->pcManager);
+
+   _setScaleRanges(state);
 }
 void _editorExit(EditorState *state, StateExit *m) {
    managedImageDestroy(state->bg);
@@ -78,6 +174,8 @@ void _editorUpdate(EditorState *state, GameStateUpdate *m) {
    Mouse *mouse = appGetMouse(appGet());
    Int2 mousePos = mouseGetPosition(mouse);
 
+   _updateScale(state);
+   
    cursorManagerUpdate(view->cursorManager, mousePos.x, mousePos.y);
    calendarUpdate(view->calendar);
    calendarSetAmbientByTime(view->calendar);
@@ -121,6 +219,7 @@ static void _handleKeyboard(EditorState *state) {
    }
 
    speed = keyboardIsDown(k, SegaKey_LeftShift) ? VP_FAST_SPEED : VP_SPEED;
+   speed *= state->scale;
 
    if (keyboardIsDown(k, SegaKey_W)) {
       vp->worldPos.y = MAX(0, vp->worldPos.y - speed);
@@ -199,7 +298,8 @@ static void _floodFill(EditorState *state, byte baseSchema, byte selectedSchema,
    if (tile && tileGetSchema(tile) == baseSchema) {
       int x, y;
 
-      gridManagerChangeTileSchema(gm, t, selectedSchema);
+      gridManagerSetTileCollision(gm, t, 0);
+      gridManagerChangeTileSchema(gm, t, selectedSchema);      
       gridManagerXYFromCellID(gm, t, &x, &y);
 
       _addTileToFloodFill(gm, baseSchema, x - 1, y, openList, closedList);
@@ -274,6 +374,7 @@ static void gridClickUp(EditorState *state, Int2 pos) {
             size_t tile = gridManagerCellIDFromXY(state->view->gridManager, x, y);
             if (tile < INF) {
                gridManagerChangeTileSchema(state->view->gridManager, tile, mapEditorGetSelectedSchema(me));
+               gridManagerSetTileCollision(state->view->gridManager, tile, 0);
             }
          }
       }
@@ -303,6 +404,7 @@ static void gridClickMove(EditorState *state, Int2 pos) {
       tile = gridManagerCellIDFromXY(state->view->gridManager, vpPos.x, vpPos.y);
       if (tile < INF) {
          gridManagerChangeTileSchema(state->view->gridManager, tile, mapEditorGetSelectedSchema(me));
+         gridManagerSetTileCollision(state->view->gridManager, tile, 0);
       }
       break;
 
@@ -329,12 +431,20 @@ static void _handleMouse(EditorState *state) {
    bool schemaOperation = mapEditorPointInSchemaWindow(me, pos);
 
    while (mousePopEvent(mouse, &event)) {    
-      calendarEditorMouse(state->view->calendar, &event, pos);
+      int calendarOperation = calendarEditorMouse(state->view->calendar, &event, pos);
 
       if (event.action == SegaMouse_Scrolled) {
          
          if (schemaOperation) {
             mapEditorScrollSchemas(me, event.pos.y);
+         }
+         else if(!calendarOperation){
+            if (event.pos.y > 0) {
+               _decreaseScale(state);
+            }
+            else {
+               _increaseScale(state);
+            }
          }
       }
       else if (event.action == SegaMouse_Pressed) {
@@ -375,7 +485,7 @@ void _editorHandleInput(EditorState *state, GameStateHandleInput *m) {
    _handleMouse(state);
 }
 
-static void _renderSquare(EditorState *state, Frame *frame) {
+static void _renderSquare(EditorState *state, Texture *tex) {
    int x, y;
    GridManager *gm = state->view->gridManager;
    Viewport *vp = state->view->viewport;
@@ -393,37 +503,73 @@ static void _renderSquare(EditorState *state, Frame *frame) {
             int renderY = y * GRID_CELL_SIZE - vp->worldPos.y;
             byte schema = mapEditorGetSelectedSchema(state->editor);
             
-            frameRenderRect(frame, &vp->region, renderX, renderY, renderX + GRID_CELL_SIZE, renderY + GRID_CELL_SIZE, 0);
-            gridManagerRenderSchema(gm, schema, frame, &vp->region, renderX, renderY);;
+            textureRenderRect(tex, &vp->region, renderX, renderY, renderX + GRID_CELL_SIZE, renderY + GRID_CELL_SIZE, 0);
+            gridManagerRenderSchema(gm, schema, tex, &vp->region, renderX, renderY);;
          }
       }
    }
 }
 
-void _editorRender(EditorState *state, GameStateRender *m) {
-   Frame *frame = m->frame;
-   frameClear(frame, FrameRegionFULL, 0);
+void renderGridMesh(EditorState *state, Texture *frame) {
+   MeshRenderData *d = state->gridMesh;
 
-   gridManagerRender(state->view->gridManager, frame);
-   actorManagerRender(state->view->actorManager, frame);
-   weatherRender(state->view->weather, frame);
-   gridManagerRenderLighting(state->view->gridManager, frame);  
+   int fboWidth = GRID_SIZE_X * state->scale;
+   int fboHeight = GRID_SIZE_Y * state->scale;
+   Transform modelTrans = { .size = (Int3) { d->gridRegion.width, d->gridRegion.height } };
+   Transform texTrans = { .size = (Int3) { fboWidth, fboHeight } };
+
+   Viewport *oldview = state->view->viewport;
+   d->gridRenderingVP = (Viewport) {
+      .region = { 0, 0, fboWidth, fboHeight },
+      .worldPos = oldview->worldPos
+   };
+
+   textureResize(d->fbo, fboWidth, fboHeight);
+   textureClear(d->fbo, NULL, 0);
+
+   state->view->viewport = &d->gridRenderingVP;
+
+   gridManagerRender(state->view->gridManager, d->fbo);
+   actorManagerRender(state->view->actorManager, d->fbo);
+   weatherRender(state->view->weather, d->fbo);
+   gridManagerRenderLighting(state->view->gridManager, d->fbo);
+
+   state->view->viewport = oldview;
+
+   textureRenderMesh(frame, &d->gridRegion, d->vbo, d->ibo, d->fbo, modelTrans, texTrans);
+}
+
+
+void _editorRender(EditorState *state, GameStateRender *m) {
+   Texture *frame = m->frame;
+   textureClear(frame, NULL, 0);
+
+   if (fabs(state->scale - 1.0f) < 0.0001f){
+      gridManagerRender(state->view->gridManager, frame);
+      actorManagerRender(state->view->actorManager, frame);
+      weatherRender(state->view->weather, frame);
+      gridManagerRenderLighting(state->view->gridManager, frame);
+   }
+   else {
+      renderGridMesh(state, frame);
+   }
 
    if (state->state == Square) {
       _renderSquare(state, frame);
    }
 
-   frameRenderImage(m->frame, FrameRegionFULL, 0, 0, managedImageGetImage(state->bg));
+   textureRenderTexture(frame, NULL, 0, 0, managedImageGetTexture(state->bg));
+
    calendarRenderClock(state->view->calendar, m->frame);
   
    mapEditorRenderSchemas(state->editor, m->frame);
    mapEditorRenderXYDisplay(state->editor, m->frame);
    cursorManagerRender(state->view->cursorManager, frame);
 
-   
-
    framerateViewerRender(state->view->framerateViewer, frame);
    lightDebuggerRender(state->view->lightDebugger, m->frame);
+
+   //
 }
 
 StateClosure gameStateCreateEditor(WorldView *view) {

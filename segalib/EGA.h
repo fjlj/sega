@@ -79,18 +79,30 @@ void paletteCopy(Palette *dest, Palette *src);
 
 typedef struct Image_t Image;
 
+/*New texture system 2017
+Textures are flat byte*'s with height, width, and a format specifier
+Going to move to a system wher einstead of Image* and Texture* there is just Image Textures (with alpha channel) and frame textures
+This way we can standardize all drawing functions to allow drawing to arbitrary textures and get FBO functionality
+Image* will be reduced to only being a serialization layer and frame will be reduced to a renderTexture function
+*/
+typedef struct Texture_t Texture;
+
 Frame *frameCreate();
 void frameDestroy(Frame *self);
+void frameClear(Frame *self, FrameRegion *vp, byte color);
+
+#ifdef USE_DEPRECATED_RENDER_API
 void frameRenderImage(Frame *self, FrameRegion *vp, short x, short y, Image *img);
 void frameRenderImagePartial(Frame *self, FrameRegion *vp, short x, short y, Image *img, short imgX, short imgY, short imgWidth, short imgHeight);
 void frameRenderPoint(Frame *self, FrameRegion *vp, short x, short y, byte color);
 void frameRenderLine(Frame *self, FrameRegion *vp, short x1, short y1, short x2, short y2, byte color);
 void frameRenderLineRect(Frame *self, FrameRegion *vp, short left, short top, short right, short bottom, byte color);
 void frameRenderRect(Frame *self, FrameRegion *vp, short left, short top, short right, short bottom, byte color);
-void frameClear(Frame *self, FrameRegion *vp, byte color);
+#endif
 
 void scanLineSetBit(ScanLine *self, short position, byte value);
 byte scanLineGetBit(ScanLine *self, short position);
+
 
 typedef struct ImageScanLine_t ImageScanLine;
 
@@ -188,14 +200,62 @@ Image must be:
    - solid 1 alpha (no transparency)
    - 2-color palette; 0 or background and 1 for foreground
 */
-FontFactory *fontFactoryCreate(Image *fontImage);
+FontFactory *fontFactoryCreate(Texture *texture);
 void fontFactoryDestroy(FontFactory *self);
 
 Font *fontFactoryGetFont(FontFactory *self, byte backGroundColor, byte foregroundColor);
 
-void frameRenderTextSingleChar(Frame *frame, const char c, short x, short y, Font *font);
+#ifdef USE_DEPRECATED_RENDER_API
 void frameRenderText(Frame *frame, const char *text, short x, short y, Font *font);
+void frameRenderTextWithoutSpaces(Frame *frame, const char *text, short x, short y, Font *font);
+#endif
 
+Texture *textureCreate(int width, int height);
+Texture *imageCreateTexture(Image *self);
+void textureDestroy(Texture *self);
+
+//used to re-use an existing texture buffer,
+//cuts down on allocs
+void textureResize(Texture *self, int width, int height);
+
+int textureGetWidth(Texture *self);
+int textureGetHeight(Texture *self);
+
+//raw data! ten cuidado!
+byte *textureGetScanline(Texture *self, byte plane, int y);
+byte *textureGetAlphaScanline(Texture *self, int y);
+
+byte textureGetColorAt(Texture *self, FrameRegion *vp, int x, int y);
+
+//useful in certian circumstances, dont use this for normal calls
+//passing NULL to a texturerender will use this automatically
+FrameRegion *textureGetFullRegion(Texture *self);
+/*
+FrameRegion NOTE: Passs NULL as a frameregion to use the full image
+*/
+
+void textureClear(Texture *self, FrameRegion *vp, byte color);
+void textureClearAlpha(Texture *self);
+void textureRenderTexture(Texture *self, FrameRegion *vp, int x, int y, Texture *tex);
+void textureRenderTexturePartial(Texture *self, FrameRegion *vp, int x, int y, Texture *tex, int texX, int texY, int texWidth, int texHeight);
+void textureRenderPoint(Texture *self, FrameRegion *vp, int x, int y, byte color);
+void textureRenderLine(Texture *self, FrameRegion *vp, int x1, int y1, int x2, int y2, byte color);
+void textureRenderLineRect(Texture *self, FrameRegion *vp, int left, int top, int right, int bottom, byte color);
+void textureRenderRect(Texture *self, FrameRegion *vp, int left, int top, int right, int bottom, byte color);
+
+void textureRenderCircle(Texture *self, FrameRegion *vp, int x, int y, int radius, byte color);
+void textureRenderEllipse(Texture *self, FrameRegion *vp, int xc, int yc, int width, int height, byte color);
+void textureRenderEllipseQB(Texture *self, FrameRegion *vp, int xc, int yc, int radius, byte color, double aspect);
+
+//will flood fill until it reaches a defined border color
+void textureRenderFloodFill(Texture *self, FrameRegion *vp, int x, int y, byte color, byte borderColor);
+
+void textureRenderTextSingleChar(Texture *tex, const char c, int x, int y, Font *font, int spaces);
+void textureRenderText(Texture *texture, const char *text, int x, int y, Font *font);
+void textureRenderTextWithoutSpaces(Texture *texture, const char *text, int x, int y, Font *font);
+
+
+void frameRenderTexture(Frame *self, FrameRegion *vp, short x, short y, Texture *tex);
 
 
 #ifdef __cplusplus

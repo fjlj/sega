@@ -50,6 +50,8 @@ struct TextArea_t {
 
    Microseconds nextChar;
    Milliseconds textSpeed;
+
+   TextAreaJustify justify;
 };
 
 
@@ -57,7 +59,7 @@ TextAreaManager *textAreaManagerCreate(WorldView *view) {
    TextAreaManager *out = checkedCalloc(1, sizeof(TextAreaManager));
    out->view = view;
 
-   out->areaTable = htCreate(GTA)(_gtaBoxCompare, _gtaBoxHash, _gtaBoxDestroy);
+   out->areaTable = htCreate(GTA)(_gtaBoxCompare, _gtaBoxHash, _gtaBoxDestroy);   
 
    return out;
 }
@@ -132,6 +134,10 @@ void textAreaDestroy(TextArea *self) {
    richTextDestroy(self->rt);
    checkedFree(self);
 }
+//void textAreaResize(TextArea *self, short x, short y, short width, short height) {
+//
+//}
+
 void textAreaSetSpeed(TextArea *self, Milliseconds timePerCharacter) {
    self->textSpeed = timePerCharacter;
 }
@@ -157,6 +163,10 @@ void textAreaHide(TextArea *self) {
 }
 void textAreaShow(TextArea *self) {
    self->shown = true;
+}
+
+void textAreaSetJustify(TextArea *self, TextAreaJustify j) {
+   self->justify = j;
 }
 
 static void _renderNextMessageToLines(TextArea *self) {
@@ -256,9 +266,19 @@ void textAreaUpdate(TextArea *self) {
             Milliseconds delay = 0;
 
             richTextLineGetRaw(rtline, self->workingLine);
+
+            if (stringEqualRaw(self->workingLine, "")) {
+               volatile int i = 5;
+               ++i;
+            }
+
             c = (char*)c_str(self->workingLine) + self->currentChar;
 
             switch (*c) {
+            case '|': 
+               delay = 500; 
+               *c = ' ';
+               break;
             case ' ': break;
             case '\\':
                if (c[1] == 'c') {
@@ -289,7 +309,7 @@ void textAreaUpdate(TextArea *self) {
       }
    }
 }
-void textAreaRender(TextArea *self, WorldView *view, Frame *frame) {
+void textAreaRender(TextArea *self, WorldView *view, Texture *tex) {
    byte x = self->x;
    byte y = self->y;
 
@@ -297,10 +317,21 @@ void textAreaRender(TextArea *self, WorldView *view, Frame *frame) {
       return;
    }
 
-   vecForEach(RichTextLine, line, self->shownLines, {      
+   vecForEach(RichTextLine, line, self->shownLines, {   
+
+      if (self->justify == TextAreaJustify_Center) {
+         size_t spanLengthTotal = 0;
+         vecForEach(Span, span, *line, {
+            spanLengthTotal += stringLen(span->string);
+         });
+
+         x += (self->width - spanLengthTotal) / 2;
+      }
+
       vecForEach(Span, span, *line, {
-         frameRenderSpan(view, frame, &x, &y, span);
+         textureRenderSpan(view, tex, &x, &y, span);
       });
+      
       x = self->x;
       ++y;
    });

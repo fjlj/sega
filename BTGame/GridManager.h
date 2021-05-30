@@ -7,19 +7,23 @@
 
 typedef struct Map_t Map;
 typedef struct GridManager_t GridManager;
-typedef struct Frame_t Frame;
+typedef struct Texture_t Texture;
 typedef struct FrameRegion_t FrameRegion;
 typedef struct WorldView_t WorldView;
 
+//defines screen area for grid display
 #define GRID_POS_X 13
 #define GRID_POS_Y 11
 
-#define GRID_CELL_SIZE 14
-#define GRID_WIDTH 21
-#define GRID_HEIGHT 11
+#define _GRID_WIDTH 21
+#define _GRID_HEIGHT 11
 
-#define GRID_PX_WIDTH (GRID_WIDTH * GRID_CELL_SIZE)
-#define GRID_PX_HEIGHT (GRID_HEIGHT * GRID_CELL_SIZE)
+#define GRID_CELL_SIZE 14
+#define GRID_SIZE_X (_GRID_WIDTH * GRID_CELL_SIZE)
+#define GRID_SIZE_Y (_GRID_HEIGHT * GRID_CELL_SIZE)
+
+
+
 
 //in milliseconds, for grid traversal
 #define DEFAULT_MOVE_SPEED 250
@@ -40,8 +44,8 @@ typedef struct LightSource_t LightSource;
 LightSource *gridManagerCreateLightSource(GridManager *self);//the gr5id manager owns the light source so
 
 
-void gridManagerRender(GridManager *self, Frame *frame);
-void gridManagerRenderLighting(GridManager *self, Frame *frame);
+void gridManagerRender(GridManager *self, Texture *tex);
+void gridManagerRenderLighting(GridManager *self, Texture *tex);
 void gridManagerSetAmbientLight(GridManager *self, byte level);
 
 Map *gridManagerGetMap(GridManager *self);
@@ -50,7 +54,7 @@ void gridManagerLoadMap(GridManager *self, Map *map);
 void gridManagerLoadSchemaTable(GridManager *self, const char *set);
 TileSchema *gridManagerGetSchema(GridManager *self, size_t index);
 size_t gridManagerGetSchemaCount(GridManager *self);
-void gridManagerRenderSchema(GridManager *self, size_t index, Frame *frame, FrameRegion *vp, short x, short y);
+void gridManagerRenderSchema(GridManager *self, size_t index, Texture *tex, FrameRegion *vp, short x, short y);
 
 //returns pointer to the actor array that contains all gridded entities currently in view
 vec(ActorPtr) *gridManagerQueryActors(GridManager *self);
@@ -73,6 +77,7 @@ Tile *gridManagerTileAtScreenPos(GridManager *self, int x, int y);
 
 //use this or else lighting wont be udpated
 void gridManagerChangeTileSchema(GridManager *self, size_t tile, byte schema);
+void gridManagerSetTileCollision(GridManager *self, size_t tile, byte coll);
 
 int gridDistance(int x0, int y0, int x1, int y1);
 

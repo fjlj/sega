@@ -6,6 +6,7 @@
 #include "Lua.h"
 #include "Actors.h"
 #include "GameClock.h"
+#include "SEGA/App.h"
 
 
 struct PCManager_t {
@@ -14,13 +15,14 @@ struct PCManager_t {
 
    bool usingTorch;
    bool sneaking;
+   Microseconds startTime;
 };
 
 
 
 PCManager *pcManagerCreate(WorldView *view) {
    PCManager *out = checkedCalloc(1, sizeof(PCManager));
-   out->view = view;
+   out->view = view;   
    return out;
 }
 
@@ -32,13 +34,13 @@ void pcManagerDestroy(PCManager *self) {
 static void _updateSprite(PCManager *self) {
 
    if (self->sneaking) {
-      actorSetImagePos(self->pc, (Int2) {28, 28});
+      actorSetImagePos(self->pc, (Int2) {0, 0});
    }
    else if (self->usingTorch) {
-      actorSetImagePos(self->pc, (Int2) { 56, 28 });
+      actorSetImagePos(self->pc, (Int2) { 28, 0 });
    }
    else {
-      actorSetImagePos(self->pc, (Int2) { 42, 28 });
+      actorSetImagePos(self->pc, (Int2) { 14, 0 });
    }
 }
 
@@ -92,12 +94,17 @@ void pcManagerUpdate(PCManager *self) {
    Int2 aPos = actorGetWorldPosition(self->pc);
    int gridWidth = gridManagerWidth(self->view->gridManager) * GRID_CELL_SIZE;
    int gridHeight = gridManagerHeight(self->view->gridManager) * GRID_CELL_SIZE;
-   int xCenter = (GRID_WIDTH / 2) * GRID_CELL_SIZE;
-   int yCenter = (GRID_HEIGHT / 2) * GRID_CELL_SIZE;
+   int xCenter = (vp->region.width / 2)/* * GRID_CELL_SIZE*/;
+   int yCenter = (vp->region.height / 2)/* * GRID_CELL_SIZE*/;
    int xOffset = MIN(gridWidth - (vp->region.width), MAX(0, aPos.x - xCenter));
    int yOffset = MIN(gridHeight - (vp->region.height), MAX(0, aPos.y - yCenter));
 
-   vp->worldPos = (Int2) { xOffset, yOffset };
+   //vp->worldPos = (Int2) { xOffset, yOffset };
+
+   //vp->worldPos.x = (t_u2s(appGetTime(appGet()) - self->startTime) / 50.0) * gridWidth;
+   
+
+   vp->worldPos.x += 1;
 
    //if (self->usingTorch && !self->sneaking) {
    //   _testLightFlicker(self);
@@ -111,12 +118,14 @@ void pcManagerCreatePC(PCManager *self) {
    actorSetMoveDelay(self->pc, DEFAULT_MOVE_DELAY);
    actorSetMoveTime(self->pc, DEFAULT_MOVE_SPEED);
 
-   actorSetImage(self->pc, stringIntern(IMG_TILE_ATLAS));
+   actorSetImage(self->pc, stringIntern("characters"));
 
    _updateLight(self);
    _updateSprite(self);
 
    luaActorMakeActorGlobal(self->view->L, self->pc, LLIB_PLAYER);
+
+   self->startTime = appGetTime(appGet());
 }
 
 void pcManagerStop(PCManager *self) {

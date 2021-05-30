@@ -688,7 +688,9 @@ void sourceWriteHeader(FILE *f, FileData *data) {
       "#include \"%s\"\n"
       "#include \"DB.h\"\n"
       "#include \"segashared/CheckedMemory.h\"\n"
+
       "#include \"sqlite/sqlite3.h\"\n\n"
+
       , c_str(data->inputFileOnly), vecSize(DBStruct)(data->structs), c_str(data->outputh)
 
       );

@@ -7,12 +7,15 @@ typedef struct FontFactory_t FontFactory;
 
 typedef enum {
    Style_Color = (1 << 0),
-   Style_Invert = (1 << 1)
+   Style_Invert = (1 << 1),
+   Style_NoSpace = (1 << 2),
+   Style_Wait = (1 << 3)
 }SpanStyles;
 
 typedef struct {
    SpanStyles flags;
    byte fg, bg;
+   int wait;
 }SpanStyle;
 
 typedef struct Span_t{
@@ -21,6 +24,7 @@ typedef struct Span_t{
 } Span;
 
 void spanRenderToString(Span *self, String *out);
+size_t spanRenderedLength(Span *self);
 void spanDestroy(Span *self);
 
 #define VectorTPart Span

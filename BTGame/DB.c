@@ -7,7 +7,6 @@
 
 #include "sqlite/sqlite3.h"
 
-
 int dbConnect(DBBase *self, const char *filename, bool create) {
    int result = 0;
    int flags = SQLITE_OPEN_READWRITE;

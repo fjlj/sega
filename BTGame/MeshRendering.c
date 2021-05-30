@@ -11,25 +11,31 @@
 #include "SEGA\App.h"
 #include <math.h>
 
-static FlatImage g_flatImage = { 0 };
-
 typedef struct{
-   FlatImage *img;
-   Frame *frame;
+   Texture *img;
+   Texture *frame;
+   FrameRegion *region;
 } RenderData;
 
 typedef struct{
-   Int2 coords[3];
+   Float2 coords[3];
 }TexCoords;
 
 static void textureShader(RenderData *r, TexCoords *data, TrianglePoint *p){
    int i = 0;
    float texX = 0.0f, texY = 0.0f;
-   int x, y;
-   SuperScanLine *buff = NULL;
+   int tx, ty, fx, fy;
+   byte *buff;
 
-   if (p->pos.x < 0 || p->pos.x >= EGA_RES_WIDTH ||
-      p->pos.y < 0 || p->pos.y >= EGA_RES_HEIGHT){
+   int texWidth = textureGetWidth(r->img);
+   int texHeight = textureGetHeight(r->img);   
+   int frameWidth = textureGetWidth(r->frame);
+   int frameHeight = textureGetHeight(r->frame);
+
+   fx = p->pos.x;
+   fy = p->pos.y;
+
+   if (fx < 0 || fx >= r->region->width || fy < 0 || fy >= r->region->height){
       return;
    }
 
@@ -38,53 +44,60 @@ static void textureShader(RenderData *r, TexCoords *data, TrianglePoint *p){
       texY += data->coords[i].y * p->b[i];
    }
 
-   x = abs((int)texX) % r->img->width;
-   y = abs((int)texY) % r->img->height;
+   tx = abs((int)texX) % texWidth;
+   ty = abs((int)texY) % texHeight;
 
-   buff = r->img->planes[0].lines + y;
-   if (!getBitFromArray(buff->pixels, x)){
+   fx += r->region->origin_x;
+   fy += r->region->origin_y;
+
+   if (fx < 0 || fx >= frameWidth ||
+      fy < 0 || fy >= frameHeight) {
+      return;
+   }
+
+   buff = textureGetAlphaScanline(r->img, ty);
+   if (!getBitFromArray(buff, tx)){
+      setBitInArray(textureGetAlphaScanline(r->frame, fy), fx, 0);
       for (i = 0; i < EGA_PLANES; ++i){
-         buff = r->img->planes[i + 1].lines + y;
-
-         setBitInArray(r->frame->planes[i].lines[p->pos.y].pixels, p->pos.x, getBitFromArray(buff->pixels, x));
+         buff = textureGetScanline(r->img, i, ty);
+         setBitInArray(textureGetScanline(r->frame, i, fy), fx, getBitFromArray(buff, tx));
       }
    }
 }
 
 static void pixelShader(RenderData *r, TexCoords *data, TrianglePoint *p){
-   if (p->pos.x < 0 || p->pos.x >= EGA_RES_WIDTH ||
-      p->pos.y < 0 || p->pos.y >= EGA_RES_HEIGHT){
-      return;
-   }
-
-   frameRenderPoint(r->frame, FrameRegionFULL, p->pos.x, p->pos.y, 0);
+   textureRenderPoint(r->frame, NULL, p->pos.x, p->pos.y, 15);
 }
 
-static void buildTransform(Matrix *m, Transform t){
+static void buildTransform(Matrix *m, Transform t) {
    Matrix m2 = quaternionToMatrix(&t.rotation);
 
    matrixIdentity(m);
    //matrixOrtho(m, 0.0f, EGA_RES_WIDTH, EGA_RES_HEIGHT, 0.0f, 1.0f, -1.0f);
 
-   matrixTranslate(m, (Float3){ (float)t.offset.x, (float)t.offset.y, (float)t.offset.z });
-
-   *m = matrixMultiply(m, &m2);
-
-   matrixScale(m, (Float3){ (float)t.size.x, (float)t.size.y, (float)t.size.z });
+   matrixTranslate(m, (Float3) { (float)t.offset.x, (float)t.offset.y, (float)t.offset.z });
+   //*m = matrixMultiply(m, &m2);
+   matrixScale(m, (Float3) { (float)t.size.x, (float)t.size.y, (float)t.size.z });
 }
 
-void renderMesh(vec(Vertex) *vbo, vec(size_t) *ibo, Image *tex, Transform t, Frame *frame){
-   RenderData r = { .img = &g_flatImage, .frame = frame };
+static Float2 _texTransform(Float2 *in, Matrix *m) {
+   Float3 out = matrixMultiplyV(m, (Float3) { in->x, in->y, 0.0f });
+   return (Float2) {out.x, out.y};
+}
+
+void textureRenderMesh(Texture *frame, FrameRegion *vp, vec(Vertex) *vbo, vec(size_t) *ibo, Texture *tex, Transform modelTrans, Transform texTrans) {
+
+   RenderData r = { .img = tex, .frame = frame, .region = vp ? vp : textureGetFullRegion(tex) };
    size_t iCount = vecSize(size_t)(ibo);
    size_t i = 0, j = 0;
    PixelShader shader = { 0 };
    Vertex *v[3] = { 0 };
    Float3 vPos[3] = { 0 };
-   Matrix m;
+   Matrix m, tm;
 
-   imageRenderToFlat(tex, r.img);
+   buildTransform(&m, modelTrans);
+   buildTransform(&tm, texTrans);
 
-   buildTransform(&m, t);
    closureInit(PixelShader)(&shader, &r, (PixelShaderFunc)&textureShader, NULL);
 
    for (i = 0; i < iCount / 3; ++i){
@@ -100,7 +113,14 @@ void renderMesh(vec(Vertex) *vbo, vec(size_t) *ibo, Image *tex, Transform t, Fra
 
       if (n.z < 0.0f){
          //render
-         TexCoords data = { .coords = { v[0]->texCoords, v[1]->texCoords, v[2]->texCoords } };
+         TexCoords data = { 
+            .coords = { 
+               _texTransform(&v[0]->texCoords, &tm),
+               _texTransform(&v[1]->texCoords, &tm),
+               _texTransform(&v[2]->texCoords, &tm),
+            } 
+         };
+
          drawTriangle(shader, &data, (Int2){ (int)vPos[0].x, (int)vPos[0].y },
                                      (Int2){ (int)vPos[1].x, (int)vPos[1].y },
                                      (Int2){ (int)vPos[2].x, (int)vPos[2].y });

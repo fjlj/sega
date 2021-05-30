@@ -3,7 +3,7 @@
 #include "segashared/Strings.h"
 #include "GameClock.h"
 
-typedef struct Frame_t Frame;
+typedef struct Texture_t Texture;
 typedef struct WorldView_t WorldView;
 
 typedef struct TextArea_t TextArea;
@@ -19,6 +19,7 @@ void textAreaManagerRegister(TextAreaManager *self, StringView id, TextArea *are
 
 TextArea *textAreaCreate(short x, short y, short width, short height);
 void textAreaDestroy(TextArea *self);
+//void textAreaResize(TextArea *self, short x, short y, short width, short height);
 void textAreaSetSpeed(TextArea *self, Milliseconds timePerCharacter);
 void textAreaPushText(TextArea *self, const char *msg);
 void textAreaSetText(TextArea *self, const char *msg);//like push but clears current queue and current drawn, also forces an instant update (ideal for 0-speed)
@@ -27,5 +28,12 @@ void textAreaSetVisibility(TextArea *self, bool visible);
 void textAreaHide(TextArea *self);
 void textAreaShow(TextArea *self);
 
+typedef enum {
+   TextAreaJustify_Left = 0,
+   TextAreaJustify_Center
+}TextAreaJustify;
+
+void textAreaSetJustify(TextArea *self, TextAreaJustify j);
+
 void textAreaUpdate(TextArea *self);
-void textAreaRender(TextArea *self, WorldView *view, Frame *frame);
+void textAreaRender(TextArea *self, WorldView *view, Texture *tex);

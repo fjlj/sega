@@ -287,11 +287,22 @@ Tile *gridManagerTileAtScreenPos(GridManager *self, int x, int y) {
    return gridManagerTileAtXY(self, vpPos.x, vpPos.y);
 }
 
+static void _refreshLighting(GridManager *self) {
+   size_t i = 0;
+   lightGridLoadMap(self->lightGrid, self->width, self->height);
+
+   //we need to do this on load now for all the lights to be registered
+   for (i = 0; i < self->cellCount; ++i) {
+      TileSchema *s = gridManagerGetSchema(self, tileGetSchema(mapTileAt(self->map, i)));
+      lightGridChangeTileSchema(self->lightGrid, i, s);
+   }
+}
+
 Map *gridManagerGetMap(GridManager *self) {
    return self->map;
 }
 void gridManagerLoadMap(GridManager *self, Map *map) {
-   size_t i = 0;
+   
    if (self->map && map != self->map) {
       mapDestroy(self->map);
    }
@@ -302,13 +313,9 @@ void gridManagerLoadMap(GridManager *self, Map *map) {
 
    _rebuildPartitionTable(self);
 
-   lightGridLoadMap(self->lightGrid, self->width, self->height);
+   
 
-   //we need to do this on load now for all the lights to be registered
-   for (i = 0; i < self->cellCount; ++i) {
-      TileSchema *s = gridManagerGetSchema(self, tileGetSchema(mapTileAt(self->map, i)));
-      lightGridChangeTileSchema(self->lightGrid, i, s);
-   }
+   _refreshLighting(self);
 
    _clearSnapshots(self);
 }
@@ -425,13 +432,18 @@ void gridManagerUpdate(GridManager *self) {
 
 }
 
+static int _cellCount(int pixels) {
+   bool aligned = !(pixels % GRID_CELL_SIZE);
+   return (pixels / GRID_CELL_SIZE) + (aligned ? 0 : 1);
+}
+
 vec(ActorPtr) *gridManagerQueryActors(GridManager *self) {
    Viewport *vp = self->view->viewport;
-   bool xaligned = !(vp->worldPos.x % GRID_CELL_SIZE);
-   bool yaligned = !(vp->worldPos.y % GRID_CELL_SIZE);
+   int xaligned = vp->worldPos.x % GRID_CELL_SIZE;
+   int yaligned = vp->worldPos.y % GRID_CELL_SIZE;
 
-   byte xcount = GRID_WIDTH + (xaligned ? 0 : 1);
-   byte ycount = GRID_HEIGHT + (yaligned ? 0 : 1);
+   byte xcount = _cellCount(xaligned + vp->region.width);
+   byte ycount = _cellCount(yaligned + vp->region.height);
 
    int x = vp->worldPos.x / GRID_CELL_SIZE;
    int y = vp->worldPos.y / GRID_CELL_SIZE;
@@ -483,48 +495,52 @@ void gridManagerChangeTileSchema(GridManager *self, size_t tile, byte schema) {
    tileSetSchema(t, schema);
 }
 
+void gridManagerSetTileCollision(GridManager *self, size_t tile, byte coll) {
+   Tile *t = mapTileAt(self->map, tile);
+   tileSetCollision(t, coll);
+}
+
 size_t gridManagerGetSchemaCount(GridManager *self) {
    return vecSize(TileSchema)(self->schemas);
 }
 
+static void _renderBlank(Texture *tex, FrameRegion *region, short x, short y, byte color) {
 
-static void _renderBlank(Frame *frame, FrameRegion *region, short x, short y, byte color) {
-
-   frameRenderRect(frame, region, x, y, x + GRID_CELL_SIZE, y + GRID_CELL_SIZE, color);
+   textureRenderRect(tex, region, x, y, x + GRID_CELL_SIZE, y + GRID_CELL_SIZE, color);
 }
 
-void gridManagerRenderSchema(GridManager *self, size_t index, Frame *frame, FrameRegion *region, short x, short y) {
+void gridManagerRenderSchema(GridManager *self, size_t index, Texture *tex, FrameRegion *region, short x, short y) {
    Viewport *vp = self->view->viewport;
    TileSchema *schema = gridManagerGetSchema(self, index);
 
    if (self->lightMode) {
       if (schema->occlusion) {
          if (schema->lit) {
-            _renderBlank(frame, region, x, y, 13);
+            _renderBlank(tex, region, x, y, 13);
          }
          else {
-            _renderBlank(frame, region, x, y, 4);
+            _renderBlank(tex, region, x, y, 4);
          }
       }
       else if (schema->lit) {
-         _renderBlank(frame, region, x, y, GRID_CELL_SIZE);
+         _renderBlank(tex, region, x, y, GRID_CELL_SIZE);
       }
       else {
-         _renderBlank(frame, region, x, y, 15);
+         _renderBlank(tex, region, x, y, 15);
       }
    }
    else {
-      frameRenderSprite(frame, region, x, y, schema->sprite);
+      textureRenderSprite(tex, region, x, y, schema->sprite);
    }
 }
 
-void gridManagerRender(GridManager *self, Frame *frame) {
+void gridManagerRender(GridManager *self, Texture *tex) {
    Viewport *vp = self->view->viewport;
-   bool xaligned = !(vp->worldPos.x % GRID_CELL_SIZE);
-   bool yaligned = !(vp->worldPos.y % GRID_CELL_SIZE);
+   int xaligned = vp->worldPos.x % GRID_CELL_SIZE;
+   int yaligned = vp->worldPos.y % GRID_CELL_SIZE;
 
-   byte xcount = GRID_WIDTH + (xaligned ? 0 : 1);
-   byte ycount = GRID_HEIGHT + (yaligned ? 0 : 1);
+   byte xcount = _cellCount(xaligned + vp->region.width);
+   byte ycount = _cellCount(yaligned + vp->region.height);
 
    int x = vp->worldPos.x / GRID_CELL_SIZE;
    int y = vp->worldPos.y / GRID_CELL_SIZE;
@@ -541,7 +557,7 @@ void gridManagerRender(GridManager *self, Frame *frame) {
       self->tilePalette = imageLibraryGetImage(self->view->imageLibrary, stringIntern(IMG_TILE_ATLAS));
    }
 
-   lightGridUpdate(self->lightGrid, x, y);
+   lightGridUpdate(self->lightGrid, x, y, xcount, ycount);
 
    for (y = ystart; y < yend; ++y) {
       for (x = xstart; x < xend; ++x) {
@@ -555,22 +571,22 @@ void gridManagerRender(GridManager *self, Frame *frame) {
                short renderY = (y * GRID_CELL_SIZE) - vp->worldPos.y;
 
 
-               gridManagerRenderSchema(self, schema, frame, region, renderX, renderY);
+               gridManagerRenderSchema(self, schema, tex, region, renderX, renderY);
             }
          }
       }
    }
 }
 
-void gridManagerRenderGridLineTest(GridManager *self, Frame *frame);
+void gridManagerRenderGridLineTest(GridManager *self, Texture *tex);
 
-void gridManagerRenderLighting(GridManager *self, Frame *frame) {
+void gridManagerRenderLighting(GridManager *self, Texture *tex) {
    Viewport *vp = self->view->viewport;
-   bool xaligned = !(vp->worldPos.x % GRID_CELL_SIZE);
-   bool yaligned = !(vp->worldPos.y % GRID_CELL_SIZE);
+   int xaligned = vp->worldPos.x % GRID_CELL_SIZE;
+   int yaligned = vp->worldPos.y % GRID_CELL_SIZE;
 
-   byte xcount = GRID_WIDTH + (xaligned ? 0 : 1);
-   byte ycount = GRID_HEIGHT + (yaligned ? 0 : 1);
+   byte xcount = _cellCount(xaligned + vp->region.width);
+   byte ycount = _cellCount(yaligned + vp->region.height);
 
    int x = vp->worldPos.x / GRID_CELL_SIZE;
    int y = vp->worldPos.y / GRID_CELL_SIZE;
@@ -592,7 +608,7 @@ void gridManagerRenderLighting(GridManager *self, Frame *frame) {
 
          LightData *lightLevel = lightGridAt(self->lightGrid, x - xstart, y - ystart);
          if (lightLevel) {
-            lightDataRender(lightLevel, frame, &vp->region, renderX, renderY);
+            lightDataRender(lightLevel, tex, &vp->region, renderX, renderY);
          }
       }
    }
@@ -608,7 +624,7 @@ void gridManagerToggleLightMode(GridManager *self) {
    self->lightMode = !self->lightMode;
 }
 
-void gridManagerRenderGridLineTest(GridManager *self, Frame *frame) {
+void gridManagerRenderGridLineTest(GridManager *self, Texture *tex) {
    Viewport *vp = self->view->viewport;
    Int2 wp = self->view->viewport->worldPos;
    Int2 start = { 100, 100 };
@@ -639,11 +655,11 @@ void gridManagerRenderGridLineTest(GridManager *self, Frame *frame) {
          int rx = ix * GRID_CELL_SIZE - wp.x;
          int ry = iy * GRID_CELL_SIZE - wp.y;
          currentTile = t;
-         frameRenderRect(frame, &vp->region, rx, ry, rx + GRID_CELL_SIZE, ry + GRID_CELL_SIZE, 15);
+         textureRenderRect(tex, &vp->region, rx, ry, rx + GRID_CELL_SIZE, ry + GRID_CELL_SIZE, 15);
       }
    }
 
-   frameRenderLine(frame, &vp->region, start.x - wp.x, start.y - wp.y, end.x - wp.x, end.y - wp.y, 0);
+   textureRenderLine(tex, &vp->region, start.x - wp.x, start.y - wp.y, end.x - wp.x, end.y - wp.y, 0);
 }
 
 void gridManagerDebugLights(GridManager *self, Int2 source, Int2 target) {
@@ -678,6 +694,7 @@ void gridManagerUndo(GridManager *self) {
    
    self->currentSnapShot -= 1;
    mapCopyInner(self->map, *vecAt(MapPtr)(self->snapshots, self->currentSnapShot - 1));
+   _refreshLighting(self);
    
 }
 void gridManagerRedo(GridManager *self) {
@@ -687,5 +704,6 @@ void gridManagerRedo(GridManager *self) {
 
    self->currentSnapShot += 1;
    mapCopyInner(self->map, *vecAt(MapPtr)(self->snapshots, self->currentSnapShot - 1));
+   _refreshLighting(self);
    
 }
